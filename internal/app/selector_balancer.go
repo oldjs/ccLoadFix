@@ -79,9 +79,14 @@ func (s *Server) sortChannelsByHealth(
 	return result
 }
 
-// calculateEffectivePriority 计算渠道的有效优先级
-// 有效优先级 = 基础优先级 - 成功率惩罚 × 置信度（越大越优先）
-// 置信度 = min(1.0, 样本量 / 置信阈值)，样本量越小惩罚越轻
+// calculateEffectivePriority 计算渠道的有效优先级（乘法缩放）
+// 有效优先级 = 基础优先级 × (floor + (1-floor) × 调整后成功率)
+// 这样成功率低的渠道优先级被按比例压缩，能跨越任何静态优先级差距
+//
+// 举例（floor=0.2）：
+//   priority=1200, successRate=20% → 1200 × (0.2 + 0.8×0.2) = 1200 × 0.36 = 432
+//   priority=1111, successRate=90% → 1111 × (0.2 + 0.8×0.9) = 1111 × 0.92 = 1022
+//   → 成功率高的渠道自动胜出，不用手动调优先级
 func (s *Server) calculateEffectivePriority(
 	ch *modelpkg.Config,
 	stats modelpkg.ChannelHealthStats,
@@ -95,18 +100,21 @@ func (s *Server) calculateEffectivePriority(
 	} else if successRate > 1 {
 		successRate = 1
 	}
-	failureRate := 1.0 - successRate
 
-	// 置信度：样本量越小，惩罚打折越多
+	// 置信度：样本量太少时惩罚打折，避免几次失败就压死一个渠道
 	confidence := 1.0
 	if cfg.MinConfidentSample > 0 {
 		confidence = min(1.0, float64(stats.SampleCount)/float64(cfg.MinConfidentSample))
 	}
 
-	// 惩罚 = 失败率 × 权重 × 置信度
-	penalty := failureRate * float64(cfg.SuccessRatePenaltyWeight) * confidence
+	// 按置信度混合：样本不足时把成功率拉向1.0（乐观）
+	adjustedRate := successRate*confidence + 1.0*(1.0-confidence)
 
-	return basePriority - penalty
+	// 乘法缩放：floor=0.2 保底不会完全归零
+	const floor = 0.2
+	multiplier := floor + (1.0-floor)*adjustedRate
+
+	return basePriority * multiplier
 }
 
 // balanceSamePriorityChannels 按优先级分组，组内使用平滑加权轮询

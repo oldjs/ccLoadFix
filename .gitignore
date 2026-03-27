@@ -5,7 +5,7 @@
 *.swp
 *.swo
 *~
-
+*csv
 # Data and database files
 data/
 *.db

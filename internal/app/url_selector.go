@@ -25,6 +25,18 @@ type urlKey struct {
 	url       string
 }
 
+// modelAffinityKey 标识渠道+模型的组合，用于亲和性路由
+type modelAffinityKey struct {
+	channelID int64
+	model     string
+}
+
+// affinityEntry 模型亲和性条目：记住上次成功的URL
+type affinityEntry struct {
+	url      string
+	lastUsed time.Time
+}
+
 // ewmaValue 指数加权移动平均值
 type ewmaValue struct {
 	value    float64 // 当前EWMA值（毫秒）
@@ -43,12 +55,13 @@ type urlRequestCount struct {
 	failure int64
 }
 
-// URLSelector 基于EWMA延迟和冷却状态选择最优URL
+// URLSelector 基于EWMA延迟、成功率和模型亲和性选择最优URL
 type URLSelector struct {
 	mu           sync.RWMutex
 	latencies    map[urlKey]*ewmaValue
 	cooldowns    map[urlKey]urlCooldownState
 	requests     map[urlKey]*urlRequestCount
+	affinities   map[modelAffinityKey]*affinityEntry // 模型亲和性：上次成功的URL
 	probing      map[urlKey]time.Time
 	alpha        float64       // EWMA权重因子
 	cooldownBase time.Duration // 基础冷却时间
@@ -85,10 +98,11 @@ func NewURLSelector() *URLSelector {
 		latencies:       make(map[urlKey]*ewmaValue),
 		cooldowns:       make(map[urlKey]urlCooldownState),
 		requests:        make(map[urlKey]*urlRequestCount),
+		affinities:      make(map[modelAffinityKey]*affinityEntry),
 		probing:         make(map[urlKey]time.Time),
 		alpha:           0.3,
 		cooldownBase:    2 * time.Minute,
-		cooldownMax:     30 * time.Minute,
+		cooldownMax:     4 * time.Hour, // 持续失败的URL冷却更久，避免反复撞死URL
 		probeTimeout:    defaultURLSelectorProbeTimeout,
 		probeDial:       (&net.Dialer{}).DialContext,
 		cleanupInterval: defaultURLSelectorCleanupInterval,
@@ -123,6 +137,14 @@ func (s *URLSelector) gcLocked(now time.Time, maxAge time.Duration) {
 	for key, started := range s.probing {
 		if started.Before(probeCutoff) {
 			delete(s.probing, key)
+		}
+	}
+
+	// 清理过期的模型亲和性（超过24小时没用的就扔了）
+	affinityCutoff := now.Add(-24 * time.Hour)
+	for key, aff := range s.affinities {
+		if aff.lastUsed.Before(affinityCutoff) {
+			delete(s.affinities, key)
 		}
 	}
 }
@@ -183,14 +205,39 @@ func (s *URLSelector) PruneChannel(channelID int64, keepURLs []string) {
 	}
 }
 
-// RemoveChannel 移除指定渠道的全部 URL 状态。
+// RemoveChannel 移除指定渠道的全部 URL 状态（含亲和性）。
 func (s *URLSelector) RemoveChannel(channelID int64) {
 	s.PruneChannel(channelID, nil)
+
+	// 清理该渠道的所有亲和性
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key := range s.affinities {
+		if key.channelID == channelID {
+			delete(s.affinities, key)
+		}
+	}
 }
 
-// SelectURL 从候选URL中选择最优的
+// SelectURL 从候选URL中选择最优的（不带模型亲和性）
 // 返回选中的URL和在原列表中的索引
 func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
+	return s.SelectURLForModel(channelID, "", urls)
+}
+
+// urlSuccessRateLocked 计算URL的成功率（需持有读锁）
+// 无请求记录返回1.0（乐观假设），避免惩罚新URL
+func (s *URLSelector) urlSuccessRateLocked(key urlKey) float64 {
+	rc, ok := s.requests[key]
+	if !ok || (rc.success+rc.failure) == 0 {
+		return 1.0 // 没数据就乐观点
+	}
+	return float64(rc.success) / float64(rc.success+rc.failure)
+}
+
+// SelectURLForModel 从候选URL中选择最优的（带模型亲和性）
+// model为空时退化为无亲和性选择
+func (s *URLSelector) SelectURLForModel(channelID int64, model string, urls []string) (string, int) {
 	if len(urls) == 0 {
 		return "", -1
 	}
@@ -203,16 +250,20 @@ func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
 	defer s.mu.RUnlock()
 
 	type candidate struct {
-		url     string
-		idx     int
-		latency float64 // -1 表示无数据
-		cooled  bool
+		url         string
+		idx         int
+		latency     float64 // -1 表示无数据
+		successRate float64 // 成功率 0-1
+		cooled      bool
 	}
 
+	// 构建URL索引，方便亲和性查找
+	urlIndex := make(map[string]int, len(urls))
 	candidates := make([]candidate, len(urls))
 	for i, u := range urls {
+		urlIndex[u] = i
 		key := urlKey{channelID: channelID, url: u}
-		c := candidate{url: u, idx: i, latency: -1}
+		c := candidate{url: u, idx: i, latency: -1, successRate: 1.0}
 
 		if e, ok := s.latencies[key]; ok {
 			c.latency = e.value
@@ -220,7 +271,21 @@ func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
 		if cd, ok := s.cooldowns[key]; ok && now.Before(cd.until) {
 			c.cooled = true
 		}
+		c.successRate = s.urlSuccessRateLocked(key)
 		candidates[i] = c
+	}
+
+	// 亲和性优先：上次成功的URL还没冷却就直接用
+	if model != "" {
+		ak := modelAffinityKey{channelID: channelID, model: model}
+		if aff, ok := s.affinities[ak]; ok {
+			if idx, found := urlIndex[aff.url]; found {
+				c := candidates[idx]
+				if !c.cooled {
+					return c.url, c.idx
+				}
+			}
+		}
 	}
 
 	// 分离可用和冷却中的候选
@@ -233,12 +298,12 @@ func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
 		}
 	}
 
-	// 如果所有URL都冷却了，退化到全部候选（兜底）
+	// 全冷却兜底
 	if len(available) == 0 {
 		available = cooled
 	}
 
-	// 未探索URL优先：随机选一个未探索的
+	// 分已知和未知
 	var unknown, known []candidate
 	for _, c := range available {
 		if c.latency < 0 {
@@ -247,39 +312,68 @@ func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
 			known = append(known, c)
 		}
 	}
-	if len(unknown) > 0 {
+
+	// 只有在没有任何已知好URL时才探索未知URL
+	// 否则优先用已知的（避免有好URL不用，跑去试未知的）
+	hasGoodKnown := false
+	for _, c := range known {
+		if c.successRate > 0.5 {
+			hasGoodKnown = true
+			break
+		}
+	}
+	if len(unknown) > 0 && !hasGoodKnown {
 		pick := unknown[rand.IntN(len(unknown))]
 		return pick.url, pick.idx
 	}
 
-	// 所有URL已探索：加权随机（权重=1/latency），延迟越低概率越高
+	// 有好URL时只用已知的；没好URL时全放一起碰运气
+	pool := known
+	if !hasGoodKnown && len(unknown) > 0 {
+		pool = append(pool, unknown...)
+	}
+	if len(pool) == 0 {
+		// 啥都没有但有未知URL，随机选一个探探
+		if len(unknown) > 0 {
+			pick := unknown[rand.IntN(len(unknown))]
+			return pick.url, pick.idx
+		}
+		return urls[0], 0
+	}
+
+	// 加权随机: weight = successRate² / latency
+	// 成功率低的URL被指数压制，同时延迟低的URL更优
 	totalWeight := 0.0
-	weights := make([]float64, len(known))
-	for i, c := range known {
+	weights := make([]float64, len(pool))
+	for i, c := range pool {
 		latency := c.latency
 		if latency <= 0 || math.IsNaN(latency) || math.IsInf(latency, 0) {
-			latency = 0.1
+			latency = 500 // 未知URL给个保守默认值，别让它权重爆表
 		}
-		weights[i] = 1.0 / latency
+		sr := c.successRate
+		if sr < 0.01 {
+			sr = 0.01 // 保底，别完全归零
+		}
+		weights[i] = (sr * sr) / latency
 		totalWeight += weights[i]
 	}
 	if totalWeight <= 0 || math.IsNaN(totalWeight) || math.IsInf(totalWeight, 0) {
-		pick := known[rand.IntN(len(known))]
+		pick := pool[rand.IntN(len(pool))]
 		return pick.url, pick.idx
 	}
 	r := rand.Float64() * totalWeight
 	for i, w := range weights {
 		r -= w
 		if r <= 0 {
-			return known[i].url, known[i].idx
+			return pool[i].url, pool[i].idx
 		}
 	}
-	return known[len(known)-1].url, known[len(known)-1].idx
+	return pool[len(pool)-1].url, pool[len(pool)-1].idx
 }
 
 // RecordLatency 记录URL的首字节时间，更新EWMA
-func (s *URLSelector) RecordLatency(channelID int64, url string, ttfb time.Duration) {
-	key := urlKey{channelID: channelID, url: url}
+func (s *URLSelector) RecordLatency(channelID int64, rawURL string, ttfb time.Duration) {
+	key := urlKey{channelID: channelID, url: rawURL}
 	ms := normalizeLatencyMS(ttfb)
 
 	s.mu.Lock()
@@ -299,6 +393,55 @@ func (s *URLSelector) RecordLatency(channelID int64, url string, ttfb time.Durat
 	} else {
 		s.requests[key] = &urlRequestCount{success: 1}
 	}
+}
+
+// SetModelAffinity 记录模型亲和性：该模型在这个渠道上次用哪个URL成功了
+func (s *URLSelector) SetModelAffinity(channelID int64, model, rawURL string) {
+	if model == "" || rawURL == "" {
+		return
+	}
+	ak := modelAffinityKey{channelID: channelID, model: model}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.affinities[ak] = &affinityEntry{
+		url:      rawURL,
+		lastUsed: time.Now(),
+	}
+}
+
+// ClearModelAffinity 清除模型亲和性（URL失败时调用）
+// 只有当前亲和URL和失败URL一致时才清除，防止误清
+func (s *URLSelector) ClearModelAffinity(channelID int64, model, failedURL string) {
+	if model == "" {
+		return
+	}
+	ak := modelAffinityKey{channelID: channelID, model: model}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if aff, ok := s.affinities[ak]; ok && aff.url == failedURL {
+		delete(s.affinities, ak)
+	}
+}
+
+// GetModelAffinity 查询模型亲和性URL（用于外部排序）
+func (s *URLSelector) GetModelAffinity(channelID int64, model string) (string, bool) {
+	if model == "" {
+		return "", false
+	}
+	ak := modelAffinityKey{channelID: channelID, model: model}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	aff, ok := s.affinities[ak]
+	if !ok {
+		return "", false
+	}
+	return aff.url, true
 }
 
 // CooldownURL 对URL施加指数退避冷却
@@ -384,7 +527,8 @@ type sortedURL struct {
 	idx int
 }
 
-// SortURLs 返回按EWMA延迟排序的全部URL列表（非冷却URL优先，用于故障切换遍历）
+// SortURLs 返回按综合得分排序的全部URL列表（非冷却URL优先，用于故障切换遍历）
+// 排序综合考虑：成功率 > 冷却状态 > EWMA延迟
 func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 	if len(urls) == 0 {
 		return nil
@@ -398,47 +542,59 @@ func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 	defer s.mu.RUnlock()
 
 	type candidate struct {
-		url     string
-		idx     int
-		latency float64
-		cooled  bool
+		url         string
+		idx         int
+		latency     float64
+		successRate float64
+		cooled      bool
 	}
 
 	candidates := make([]candidate, len(urls))
 	for i, u := range urls {
 		key := urlKey{channelID: channelID, url: u}
-		c := candidate{url: u, idx: i, latency: -1}
+		c := candidate{url: u, idx: i, latency: -1, successRate: 1.0}
 		if e, ok := s.latencies[key]; ok {
 			c.latency = e.value
 		}
 		if cd, ok := s.cooldowns[key]; ok && now.Before(cd.until) {
 			c.cooled = true
 		}
+		c.successRate = s.urlSuccessRateLocked(key)
 		candidates[i] = c
 	}
 
-	// 先随机打乱，再稳定排序
+	// 先随机打乱（同分时打散）
 	rand.Shuffle(len(candidates), func(i, j int) {
 		candidates[i], candidates[j] = candidates[j], candidates[i]
 	})
-	// 排序优先级：非冷却 > 冷却，同组内未探索 > 已知，已知按EWMA升序
+	// 排序优先级：非冷却 > 冷却，同组内高成功率优先，同成功率按延迟升序
 	slices.SortStableFunc(candidates, func(ci, cj candidate) int {
+		// 非冷却优先
 		if ci.cooled != cj.cooled {
 			if !ci.cooled {
-				return -1 // 非冷却优先
+				return -1
 			}
 			return 1
 		}
+		// 成功率高的优先（差距>0.1才算有区别，避免噪声）
+		if ci.successRate-cj.successRate > 0.1 {
+			return -1
+		}
+		if cj.successRate-ci.successRate > 0.1 {
+			return 1
+		}
+		// 已知 vs 未知：已知成功率高的优先，未知的排后面
 		iKnown, jKnown := ci.latency >= 0, cj.latency >= 0
 		if iKnown != jKnown {
-			if !iKnown {
-				return -1 // 未探索的优先
+			if iKnown {
+				return -1 // 有数据的优先（改掉原来的探索优先）
 			}
 			return 1
 		}
 		if !iKnown {
 			return 0 // 都未探索：保持随机顺序
 		}
+		// 延迟低的优先
 		if ci.latency < cj.latency {
 			return -1
 		}

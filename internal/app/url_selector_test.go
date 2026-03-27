@@ -98,7 +98,10 @@ func TestURLSelector_CooldownExpires(t *testing.T) {
 	sel := NewURLSelector()
 	sel.cooldownBase = 10 * time.Millisecond // 测试用短冷却
 	urls := []string{"https://a.com", "https://b.com"}
-	sel.RecordLatency(1, "https://a.com", 50*time.Millisecond)
+	// 多记几次成功，这样一次失败不会把成功率拉太低
+	for range 5 {
+		sel.RecordLatency(1, "https://a.com", 50*time.Millisecond)
+	}
 	sel.RecordLatency(1, "https://b.com", 200*time.Millisecond)
 	sel.CooldownURL(1, "https://a.com")
 
@@ -108,8 +111,10 @@ func TestURLSelector_CooldownExpires(t *testing.T) {
 		t.Errorf("during cooldown: expected b, got %s", url)
 	}
 
-	// 等待冷却过期后：a（最快）应该被大多数时候选中
-	// a(50ms) vs b(200ms) → a权重=1/50=0.02, b权重=1/200=0.005 → a占80%
+	// 等待冷却过期后：a延迟低且成功率高(5/6≈83%)，应被大多数时候选中
+	// a: weight = (5/6)² / 50 ≈ 0.0139
+	// b: weight = 1.0² / 200 = 0.005
+	// a占比 ≈ 74%
 	time.Sleep(15 * time.Millisecond)
 	aCount := 0
 	for range 200 {
@@ -118,8 +123,8 @@ func TestURLSelector_CooldownExpires(t *testing.T) {
 			aCount++
 		}
 	}
-	if aCount < 130 {
-		t.Errorf("after cooldown: expected a selected ~80%%, got %d/200", aCount)
+	if aCount < 110 {
+		t.Errorf("after cooldown: expected a selected ~74%%, got %d/200", aCount)
 	}
 }
 
@@ -152,24 +157,51 @@ func TestURLSelector_IndependentChannels(t *testing.T) {
 	}
 }
 
-func TestURLSelector_ExploreFirst(t *testing.T) {
+func TestURLSelector_ExploreWhenNoGoodKnown(t *testing.T) {
 	sel := NewURLSelector()
 	urls := []string{"https://a.com", "https://b.com", "https://c.com"}
 
-	// 只有a有延迟数据
+	// a有延迟数据但成功率很低（1成功5失败=16.7%），低于50%阈值
 	sel.RecordLatency(1, "https://a.com", 100*time.Millisecond)
+	for range 5 {
+		sel.CooldownURL(1, "https://a.com")
+	}
+	// 清掉冷却，只保留低成功率记录
+	sel.mu.Lock()
+	delete(sel.cooldowns, urlKey{channelID: 1, url: "https://a.com"})
+	sel.mu.Unlock()
 
-	// 未探索URL应该被优先选择（b或c），而非已知的a
+	// 没有好的已知URL（成功率<50%），应该去探索未知URL
 	seen := map[string]int{}
 	for range 50 {
 		url, _ := sel.SelectURL(1, urls)
 		seen[url]++
 	}
-	if seen["https://a.com"] > 0 {
-		t.Errorf("explore-first: a.com (known) should not be selected while b.com/c.com are unexplored, got a=%d", seen["https://a.com"])
+	if seen["https://b.com"] == 0 && seen["https://c.com"] == 0 {
+		t.Errorf("should explore unknown URLs when no good known URL exists, got a=%d b=%d c=%d",
+			seen["https://a.com"], seen["https://b.com"], seen["https://c.com"])
 	}
-	if seen["https://b.com"] == 0 || seen["https://c.com"] == 0 {
-		t.Errorf("explore-first: both unexplored URLs should be selected, got b=%d c=%d", seen["https://b.com"], seen["https://c.com"])
+}
+
+func TestURLSelector_PreferKnownGoodOverUnknown(t *testing.T) {
+	sel := NewURLSelector()
+	urls := []string{"https://a.com", "https://b.com", "https://c.com"}
+
+	// a有延迟数据且成功率100%（好的已知URL）
+	for range 3 {
+		sel.RecordLatency(1, "https://a.com", 100*time.Millisecond)
+	}
+
+	// 有好的已知URL时，应优先用已知的，不盲目探索未知
+	seen := map[string]int{}
+	for range 100 {
+		url, _ := sel.SelectURL(1, urls)
+		seen[url]++
+	}
+	// a应该被选中大部分时间（但未知URL也有一点概率因为放进了pool）
+	if seen["https://a.com"] < 30 {
+		t.Errorf("should prefer known good URL, got a=%d b=%d c=%d",
+			seen["https://a.com"], seen["https://b.com"], seen["https://c.com"])
 	}
 }
 

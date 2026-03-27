@@ -705,7 +705,8 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		}
 
 		// URL循环（单URL时退化为单次迭代）
-		sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
+		// 传入actualModel让亲和性URL排第一
+		sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls, actualModel)
 		var urlLastFailure *proxyResult
 		for urlIdx, urlEntry := range sortedURLs {
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -722,7 +723,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 				ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, urlEntry.url, w, shouldDeferChannelCooldown)
 
 			if result != nil && result.succeeded {
-				// 成功：记录TTFB到URLSelector（仅多URL场景）
+				// 成功：记录TTFB + 模型亲和性
 				if len(urls) > 1 && selector != nil && result.status >= 200 && result.status < 300 {
 					ttfb := time.Duration(result.firstByteTime * float64(time.Second))
 					if ttfb <= 0 {
@@ -731,6 +732,8 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 					if ttfb > 0 {
 						selector.RecordLatency(cfg.ID, urlEntry.url, ttfb)
 					}
+					// 记住这个URL：下次同模型直接用它
+					selector.SetModelAffinity(cfg.ID, actualModel, urlEntry.url)
 				}
 				return result, nil
 			}
@@ -748,20 +751,13 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 				return urlLastFailure, nil
 			}
 			// 渠道级错误 (ActionRetryChannel) 或网络错误：
-			// 在多URL场景下，默认先尝试下一个URL
+			// 多URL场景下一律试下一个URL，不因5xx就跳渠道
+			// 因为每个URL是独立代理节点，一个挂了不代表整个渠道都挂
 			if len(urls) > 1 {
 				if selector != nil {
 					selector.CooldownURL(cfg.ID, urlEntry.url)
-				}
-
-				// 新策略：上游明确返回 5xx（598 首字节超时除外）时，直接切换下一个渠道。
-				// 该分支命中时，当前URL若使用了 deferChannelCooldown，需要补做一次渠道级冷却写入。
-				if shouldSwitchChannelImmediatelyOnHTTP5xx(result) {
-					if shouldDeferChannelCooldown && result != nil {
-						input := httpErrorInputFromParts(cfg.ID, keyIndex, result.status, result.body, result.header)
-						s.applyCooldownDecision(ctx, cfg, input)
-					}
-					break
+					// 亲和性URL挂了就清掉，别下次还选它
+					selector.ClearModelAffinity(cfg.ID, actualModel, urlEntry.url)
 				}
 				continue // 下一个URL
 			}
@@ -787,17 +783,6 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 	// 所有Key都尝试过但都失败（无 lastFailure 说明循环未执行或逻辑异常）
 	return nil, ErrAllKeysExhausted
-}
-
-func shouldSwitchChannelImmediatelyOnHTTP5xx(result *proxyResult) bool {
-	// 仅针对“上游已返回HTTP响应”的5xx生效，避免把网络错误误判为同一策略。
-	if result == nil || result.header == nil {
-		return false
-	}
-	if result.status < 500 || result.status > 599 {
-		return false
-	}
-	return result.status != util.StatusFirstByteTimeout
 }
 
 func shouldCheckSoftErrorForChannelType(channelType string) bool {
