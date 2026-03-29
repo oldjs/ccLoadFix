@@ -51,8 +51,9 @@ type urlCooldownState struct {
 
 // urlRequestCount URL调用计数（内存）
 type urlRequestCount struct {
-	success int64
-	failure int64
+	success                  int64
+	failure                  int64
+	consecutiveModelNotFound int // 连续"没这个模型"次数，成功后清零
 }
 
 // URLSelector 基于EWMA延迟、成功率和模型亲和性选择最优URL
@@ -387,12 +388,49 @@ func (s *URLSelector) RecordLatency(channelID int64, rawURL string, ttfb time.Du
 	// 成功请求：清除冷却状态，立即恢复可用
 	delete(s.cooldowns, key)
 
-	// 递增成功计数
+	// 成功了：递增成功计数，清零连续 model not found
 	if rc := s.requests[key]; rc != nil {
 		rc.success++
+		rc.consecutiveModelNotFound = 0
 	} else {
 		s.requests[key] = &urlRequestCount{success: 1}
 	}
+}
+
+// RecordModelNotFound 记录一次"URL没有这个模型"
+// 连续达到阈值后触发冷却（说明这个URL对所有模型都不行）
+// 返回 true 表示达到阈值、已触发冷却
+func (s *URLSelector) RecordModelNotFound(channelID int64, rawURL string, threshold int) bool {
+	key := urlKey{channelID: channelID, url: rawURL}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rc := s.requests[key]
+	if rc == nil {
+		rc = &urlRequestCount{}
+		s.requests[key] = rc
+	}
+	rc.consecutiveModelNotFound++
+
+	if rc.consecutiveModelNotFound >= threshold {
+		// 达到阈值，这个URL对啥模型都不行，冷却它
+		rc.consecutiveModelNotFound = 0 // 冷却后重置，解冻后再给机会
+		// 直接操作 cooldowns map（已持有写锁）
+		now := time.Now()
+		cd := s.cooldowns[key]
+		cd.consecutiveFails++
+		multiplier := math.Pow(2, float64(cd.consecutiveFails-1))
+		duration := time.Duration(float64(s.cooldownBase) * multiplier)
+		if duration > s.cooldownMax {
+			duration = s.cooldownMax
+		}
+		cd.until = now.Add(duration)
+		s.cooldowns[key] = cd
+		rc.failure++
+		return true
+	}
+	return false
 }
 
 // SetModelAffinity 记录模型亲和性：该模型在这个渠道上次用哪个URL成功了

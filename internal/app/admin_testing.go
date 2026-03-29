@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
@@ -107,29 +106,21 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		}
 
 		_ = s.store.ResetChannelCooldown(c.Request.Context(), id)
+
+		// 测试成功的URL清冷却+记录延迟，让它立刻恢复可用
+		if forcedBaseURL != "" && s.urlSelector != nil {
+			latency := pickURLSelectorLatency(testResult)
+			if latency <= 0 {
+				latency = time.Second // 兜底给个合理默认值
+			}
+			s.urlSelector.RecordLatency(id, forcedBaseURL, latency)
+		}
+
 		s.invalidateChannelRelatedCache(id)
 	} else {
-		statusCode, errorBody, headers := buildTestFailureClassificationInput(testResult)
-
-		action := s.cooldownManager.HandleError(
-			c.Request.Context(),
-			httpErrorInputFromParts(id, keyIndex, statusCode, errorBody, headers),
-		)
-
-		s.invalidateChannelRelatedCache(id)
-
-		var actionStr string
-		switch action {
-		case cooldown.ActionRetryKey:
-			actionStr = "key_cooldown_applied"
-		case cooldown.ActionRetryChannel:
-			actionStr = "channel_cooldown_applied"
-		case cooldown.ActionReturnClient:
-			actionStr = "client_error_no_cooldown"
-		default:
-			actionStr = "unknown_action"
-		}
-		testResult["cooldown_action"] = actionStr
+		// 手动测试失败不影响任何调度状态（不冷却Key/渠道/URL）
+		// 测试失败原因太多（网络波动、临时限流），不能因为一次手动测试就惩罚
+		testResult["cooldown_action"] = "test_only_no_cooldown"
 	}
 
 	RespondJSON(c, http.StatusOK, testResult)
