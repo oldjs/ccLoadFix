@@ -516,6 +516,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/channels/:id/test", s.HandleChannelTest)
 		admin.POST("/channels/:id/test-url", s.HandleChannelURLTest)
 		admin.POST("/channels/:id/cooldown", s.HandleSetChannelCooldown)
+		admin.DELETE("/channels/:id/cooldown", s.HandleClearChannelAllCooldowns) // 一键清除所有冷却
 		admin.POST("/channels/:id/keys/:keyIndex/cooldown", s.HandleSetKeyCooldown)
 		admin.DELETE("/channels/:id/keys/:keyIndex", s.HandleDeleteAPIKey)
 

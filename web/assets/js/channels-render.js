@@ -332,6 +332,9 @@ function initChannelEventDelegation() {
       case 'toggle':
         toggleChannel(channelId, !enabled);
         break;
+      case 'clear-cooldown':
+        clearChannelCooldowns(channelId, channelName, btn);
+        break;
       case 'copy':
         copyChannel(channelId, channelName);
         break;

@@ -363,6 +363,30 @@ async function toggleChannel(id, enabled) {
   }
 }
 
+// 一键清除渠道所有冷却（渠道+Key+URL）
+async function clearChannelCooldowns(id, name, btn) {
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const resp = await fetchAPIWithAuth(`/admin/channels/${id}/cooldown`, { method: 'DELETE' });
+    if (!resp.success) throw new Error(resp.error || window.t('common.failed'));
+    const msg = (resp.data && resp.data.message) || resp.message || '';
+    window.showNotification(
+      `${name}: ${msg || window.t('channels.cooldownCleared')}`, 'success',
+    );
+    // 刷新列表状态
+    clearChannelsCache();
+    await loadChannels(filters.channelType);
+  } catch (e) {
+    console.error('Clear cooldown failed', e);
+    window.showNotification(window.t('common.failed') + ': ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
 function syncSelectedChannelsWithLoadedChannels() {
   const loadedIDs = new Set((channels || [])
     .map(ch => normalizeSelectedChannelID(ch.id))

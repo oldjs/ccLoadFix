@@ -38,6 +38,39 @@ func (s *Server) HandleSetChannelCooldown(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, gin.H{"message": fmt.Sprintf("渠道已冷却 %d 毫秒", req.DurationMs)})
 }
 
+// HandleClearChannelAllCooldowns 一键清除渠道所有冷却（渠道级+Key级+URL级）
+func (s *Server) HandleClearChannelAllCooldowns(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel ID")
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// 清渠道级冷却
+	_ = s.cooldownManager.ClearChannelCooldown(ctx, id)
+
+	// 清所有Key冷却
+	apiKeys, _ := s.store.GetAPIKeys(ctx, id)
+	for i := range apiKeys {
+		_ = s.cooldownManager.ClearKeyCooldown(ctx, id, i)
+	}
+
+	// 清所有URL冷却 + 重置失败计数
+	urlCleared := 0
+	if s.urlSelector != nil {
+		urlCleared = s.urlSelector.ClearChannelCooldowns(id)
+	}
+
+	s.invalidateChannelRelatedCache(id)
+
+	RespondJSON(c, http.StatusOK, gin.H{
+		"message":     fmt.Sprintf("已清除渠道所有冷却（URL: %d 条）", urlCleared),
+		"url_cleared": urlCleared,
+	})
+}
+
 // HandleSetKeyCooldown 设置Key级别冷却
 func (s *Server) HandleSetKeyCooldown(c *gin.Context) {
 	id, err := ParseInt64Param(c, "id")

@@ -751,13 +751,18 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 				return urlLastFailure, nil
 			}
 			// 渠道级错误 (ActionRetryChannel) 或网络错误：
-			// 多URL场景下一律试下一个URL，不因5xx就跳渠道
-			// 因为每个URL是独立代理节点，一个挂了不代表整个渠道都挂
+			// 多URL场景下一律试下一个URL，每个URL是独立代理节点
 			if len(urls) > 1 {
 				if selector != nil {
-					selector.CooldownURL(cfg.ID, urlEntry.url)
-					// 亲和性URL挂了就清掉，别下次还选它
-					selector.ClearModelAffinity(cfg.ID, actualModel, urlEntry.url)
+					// 区分"URL没这个模型"和"URL真挂了"
+					// "unknown provider for model" = 代理不认识这个模型，URL本身没问题，不冷却
+					// 其他5xx/网络错误 = URL有问题，冷却它
+					if isModelNotFoundOnProxy(result) {
+						selector.ClearModelAffinity(cfg.ID, actualModel, urlEntry.url)
+					} else {
+						selector.CooldownURL(cfg.ID, urlEntry.url)
+						selector.ClearModelAffinity(cfg.ID, actualModel, urlEntry.url)
+					}
 				}
 				continue // 下一个URL
 			}
@@ -783,6 +788,23 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 	// 所有Key都尝试过但都失败（无 lastFailure 说明循环未执行或逻辑异常）
 	return nil, ErrAllKeysExhausted
+}
+
+// isModelNotFoundOnProxy 检测代理返回的"不认识这个模型"错误
+// 典型响应: HTTP 502 + {"error":{"message":"unknown provider for model xxx"}}
+// 这种情况URL本身没问题，只是不支持请求的模型，不应该冷却
+func isModelNotFoundOnProxy(result *proxyResult) bool {
+	if result == nil || len(result.body) == 0 {
+		return false
+	}
+	// 只看 502（代理网关错误）和 404
+	if result.status != 502 && result.status != 404 {
+		return false
+	}
+	body := strings.ToLower(string(result.body))
+	return strings.Contains(body, "unknown provider for model") ||
+		strings.Contains(body, "model_not_found") ||
+		strings.Contains(body, "does not exist")
 }
 
 func shouldCheckSoftErrorForChannelType(channelType string) bool {

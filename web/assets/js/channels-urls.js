@@ -273,6 +273,65 @@ function batchDeleteSelectedURLs() {
   markChannelFormDirty();
 }
 
+// 弹出模型选择框，返回选中的模型名，取消返回 null
+function showModelSelectDialog(models, urlIndex) {
+  return new Promise(resolve => {
+    // 遮罩
+    const overlay = document.createElement('div');
+    Object.assign(overlay.style, {
+      position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.4)',
+      zIndex: '10000', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    });
+
+    const dialog = document.createElement('div');
+    Object.assign(dialog.style, {
+      background: 'var(--bg-primary, #fff)', borderRadius: '8px', padding: '16px 20px',
+      minWidth: '240px', maxWidth: '360px', boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
+    });
+
+    const title = document.createElement('div');
+    title.textContent = `URL #${urlIndex + 1} - ${window.t ? window.t('channels.selectTestModel') : 'Select model to test'}`;
+    Object.assign(title.style, { fontWeight: '600', marginBottom: '12px', fontSize: '14px' });
+    dialog.appendChild(title);
+
+    // 每个模型一个按钮
+    for (const m of models) {
+      const btn = document.createElement('button');
+      btn.textContent = m;
+      Object.assign(btn.style, {
+        display: 'block', width: '100%', padding: '8px 12px', marginBottom: '6px',
+        border: '1px solid var(--border-color, #ddd)', borderRadius: '6px',
+        background: 'var(--bg-secondary, #f5f5f5)', cursor: 'pointer',
+        textAlign: 'left', fontSize: '13px',
+      });
+      btn.onmouseenter = () => btn.style.background = 'var(--bg-hover, #e8e8e8)';
+      btn.onmouseleave = () => btn.style.background = 'var(--bg-secondary, #f5f5f5)';
+      btn.onclick = () => { overlay.remove(); resolve(m); };
+      dialog.appendChild(btn);
+    }
+
+    // 取消按钮
+    const cancel = document.createElement('button');
+    cancel.textContent = window.t ? window.t('common.cancel') : 'Cancel';
+    Object.assign(cancel.style, {
+      display: 'block', width: '100%', padding: '8px', marginTop: '8px',
+      border: 'none', borderRadius: '6px', background: 'transparent',
+      cursor: 'pointer', color: 'var(--text-secondary, #888)', fontSize: '13px',
+    });
+    cancel.onclick = () => { overlay.remove(); resolve(null); };
+    dialog.appendChild(cancel);
+
+    // ESC 关闭
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { overlay.remove(); resolve(null); } };
+    overlay.tabIndex = -1;
+    overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(null); } };
+
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+    overlay.focus();
+  });
+}
+
 async function testInlineURL(index, buttonElement) {
   if (!editingChannelId) {
     alert(window.t('channels.cannotGetChannelId'));
@@ -287,7 +346,6 @@ async function testInlineURL(index, buttonElement) {
     return;
   }
 
-  const firstModel = models[0];
   const url = (inlineURLTableData[index] || '').trim();
   if (!url) {
     alert(window.t('channels.fillApiUrlFirst'));
@@ -298,6 +356,15 @@ async function testInlineURL(index, buttonElement) {
   if (!firstKey) {
     alert(window.t('channels.emptyKeyCannotTest'));
     return;
+  }
+
+  // 让用户选测哪个模型（只有一个就直接用）
+  let selectedModel;
+  if (models.length === 1) {
+    selectedModel = models[0];
+  } else {
+    selectedModel = await showModelSelectDialog(models, index);
+    if (!selectedModel) return; // 用户取消
   }
 
   const channelTypeRadios = document.querySelectorAll('input[name="channelType"]');
@@ -312,14 +379,14 @@ async function testInlineURL(index, buttonElement) {
   if (!buttonElement) return;
   const originalHTML = buttonElement.innerHTML;
   buttonElement.disabled = true;
-  buttonElement.innerHTML = '<span style="font-size: 10px;">⏳</span>';
+  buttonElement.innerHTML = '<span style="font-size: 10px;">...</span>';
 
   try {
     const testResult = await fetchDataWithAuth(`/admin/channels/${editingChannelId}/test-url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: firstModel,
+        model: selectedModel,
         stream: true,
         content: 'test',
         channel_type: channelType,

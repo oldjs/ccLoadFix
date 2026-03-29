@@ -484,6 +484,27 @@ func (s *URLSelector) IsCooledDown(channelID int64, url string) bool {
 	return ok && time.Now().Before(cd.until)
 }
 
+// ClearChannelCooldowns 清除指定渠道所有URL的冷却状态和失败计数
+func (s *URLSelector) ClearChannelCooldowns(channelID int64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cleared := 0
+	for key := range s.cooldowns {
+		if key.channelID == channelID {
+			delete(s.cooldowns, key)
+			cleared++
+		}
+	}
+	// 同时重置失败计数，给这些URL一个干净的起点
+	for key, rc := range s.requests {
+		if key.channelID == channelID && rc != nil {
+			rc.failure = 0
+		}
+	}
+	return cleared
+}
+
 // URLStat 单个URL的运行时状态快照
 type URLStat struct {
 	URL              string  `json:"url"`
