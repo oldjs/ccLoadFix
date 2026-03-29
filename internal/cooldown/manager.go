@@ -89,22 +89,23 @@ func (m *Manager) classifyDecision(ctx context.Context, in ErrorInput) cooldownD
 		decision.hasReset1308 = classification.HasResetTime1308
 	}
 
-	// 2. [TARGET] 动态调整:单Key渠道的Key级错误应该直接冷却渠道
-	// 设计原则:如果没有其他Key可以重试,Key级错误等同于渠道级错误
-	// [WARN] 例外：1308错误保持Key级（因为它有精确时间，后续会特殊处理）
+	// 2. 单Key渠道的Key级错误处理
+	// [WARN] 例外：1308错误保持Key级（有精确重置时间，后续特殊处理）
 	if errLevel == util.ErrorLevelKey && !decision.hasReset1308 {
 		var config *model.Config
 		var err error
 
-		// 优先使用缓存层（如果可用）
 		if m.configGetter != nil {
 			config, err = m.configGetter.GetConfig(ctx, channelID)
 		} else {
 			config, err = m.store.GetConfig(ctx, channelID)
 		}
 
-		// 查询失败或单Key渠道:直接升级为渠道级错误
 		if err != nil || config == nil || config.KeyCount <= 1 {
+			// 单Key渠道：没有其他Key可以重试
+			// 多URL场景：升级为渠道级，让 proxy_forward 的URL循环去试下一个URL
+			// 单URL场景：同上，冷却整个渠道
+			// 关键：不再冷却Key（Key是固定的，冷却没意义），让URL级调度处理
 			errLevel = util.ErrorLevelChannel
 		}
 	}

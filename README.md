@@ -11,7 +11,9 @@
 
 > 高性能AI API透明代理 | 智能路由 | 模型亲和性 | 自动故障切换 | 一键渠道管理
 
-基于 [caidaoli/ccLoad](https://github.com/caidaoli/ccLoad) 的增强版，新增智能路由引擎。支持 Claude Code、Codex、Gemini、OpenAI 四大平台。
+基于 [caidaoli/ccLoad](https://github.com/caidaoli/ccLoad) 的增强版，专为**多 URL 单 Key**场景优化。支持 Claude Code、Codex、Gemini、OpenAI 四大平台。
+
+**与原项目的定位区别**：原项目偏向多渠道多 Key 负载均衡，本项目针对"少量渠道、每个渠道几十个代理 URL、单个 Key"的场景做了深度改造——URL 级智能调度、模型亲和性、成功率驱动的优先级、单 Key 不冷却 Key 只冷却 URL。如果你的渠道配置也是这种模式，用这个版本体验会好很多。
 
 ## 相比上游的改进
 
@@ -22,6 +24,11 @@
 - **5xx 不跳渠道**：多 URL 渠道里单个 URL 返回 5xx，继续试下一个 URL（每个 URL 是独立代理节点）
 - **模型缺失不冷却**：URL 返回 `unknown provider for model`（502）不冷却该 URL，试下一个
 - **URL 冷却升级**：最高从 30min 提到 4h，持续失败的死 URL 不会频繁被重试
+
+**单 Key 友好的冷却策略**：
+- **429 不冷却 Key**：单 Key 渠道的限流只冷却当前 URL，换个 URL 继续用同一个 Key
+- **手动测试不惩罚**：测试失败不触发任何冷却，成功则清除 URL 冷却立刻恢复
+- **model not found 累计制**：URL 连续 10 次返回"没这个模型"才冷却，偶尔一次不惩罚
 
 **管理增强**：
 - **一键清冷却**：渠道列表一键清除所有冷却（渠道+Key+URL）
