@@ -633,8 +633,9 @@ func TestHandleChannelTest_SSESoftErrorTriggersCooldown(t *testing.T) {
 		t.Fatalf("错误信息不对，got=%q data=%+v", got, resp.Data)
 	}
 
-	if got, _ := resp.Data["cooldown_action"].(string); got != "channel_cooldown_applied" {
-		t.Fatalf("1113 软错误在单 Key 渠道应升级为渠道冷却，got=%q data=%+v", got, resp.Data)
+	// 手动测试失败不触发任何冷却（测试是观察行为，不惩罚）
+	if got, _ := resp.Data["cooldown_action"].(string); got != "test_only_no_cooldown" {
+		t.Fatalf("手动测试失败不应触发冷却，got=%q data=%+v", got, resp.Data)
 	}
 }
 

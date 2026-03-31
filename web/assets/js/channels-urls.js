@@ -499,3 +499,91 @@ function updateURLStatsHeader() {
   thead.insertBefore(latencyTh, actionsTh);
   thead.insertBefore(requestsTh, actionsTh);
 }
+
+// 导出URL：弹窗选格式，生成 txt 下载
+function exportURLs() {
+  const urls = getValidInlineURLs();
+  if (urls.length === 0) {
+    alert(window.t('channels.noUrlsToExport') || 'No URLs to export');
+    return;
+  }
+
+  // 拿第一个key（用于 url|key 格式）
+  const firstKey = (inlineKeyTableData[0] || '').trim();
+
+  // 弹窗选格式
+  const overlay = document.createElement('div');
+  Object.assign(overlay.style, {
+    position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.4)',
+    zIndex: '10000', display: 'flex', alignItems: 'center', justifyContent: 'center',
+  });
+
+  const dialog = document.createElement('div');
+  Object.assign(dialog.style, {
+    background: 'var(--bg-primary, #fff)', borderRadius: '8px', padding: '16px 20px',
+    minWidth: '260px', maxWidth: '380px', boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
+  });
+
+  const title = document.createElement('div');
+  title.textContent = window.t('channels.exportUrlsTitle') || 'Export URLs';
+  Object.assign(title.style, { fontWeight: '600', marginBottom: '12px', fontSize: '14px' });
+  dialog.appendChild(title);
+
+  const hint = document.createElement('div');
+  hint.textContent = `${urls.length} URLs`;
+  Object.assign(hint.style, { marginBottom: '12px', fontSize: '12px', color: 'var(--text-secondary, #888)' });
+  dialog.appendChild(hint);
+
+  function makeBtn(label, onClick) {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    Object.assign(btn.style, {
+      display: 'block', width: '100%', padding: '10px 12px', marginBottom: '6px',
+      border: '1px solid var(--border-color, #ddd)', borderRadius: '6px',
+      background: 'var(--bg-secondary, #f5f5f5)', cursor: 'pointer',
+      textAlign: 'left', fontSize: '13px',
+    });
+    btn.onmouseenter = () => btn.style.background = 'var(--bg-hover, #e8e8e8)';
+    btn.onmouseleave = () => btn.style.background = 'var(--bg-secondary, #f5f5f5)';
+    btn.onclick = () => { overlay.remove(); onClick(); };
+    return btn;
+  }
+
+  // 格式1: 纯 URL
+  dialog.appendChild(makeBtn(
+    (window.t('channels.exportPlainUrl') || 'Plain URLs') + '  (url)',
+    () => downloadTxt(urls.join('\n'), 'urls.txt'),
+  ));
+
+  // 格式2: url|key
+  if (firstKey) {
+    dialog.appendChild(makeBtn(
+      (window.t('channels.exportUrlWithKey') || 'URLs with Key') + '  (url|key)',
+      () => downloadTxt(urls.map(u => u + '|' + firstKey).join('\n'), 'urls_with_key.txt'),
+    ));
+  }
+
+  // 取消
+  const cancel = document.createElement('button');
+  cancel.textContent = window.t('common.cancel') || 'Cancel';
+  Object.assign(cancel.style, {
+    display: 'block', width: '100%', padding: '8px', marginTop: '8px',
+    border: 'none', borderRadius: '6px', background: 'transparent',
+    cursor: 'pointer', color: 'var(--text-secondary, #888)', fontSize: '13px',
+  });
+  cancel.onclick = () => overlay.remove();
+  dialog.appendChild(cancel);
+
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+}
+
+function downloadTxt(content, filename) {
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}

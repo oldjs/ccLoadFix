@@ -760,7 +760,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 					if isModelNotFoundOnProxy(result) {
 						selector.ClearModelAffinity(cfg.ID, actualModel, urlEntry.url)
 						// 累计"没这个模型"次数，连续10次就冷却（说明这URL对啥模型都不行）
-						selector.RecordModelNotFound(cfg.ID, urlEntry.url, 10)
+						selector.RecordModelNotFound(cfg.ID, urlEntry.url, 3)
 					} else {
 						selector.CooldownURL(cfg.ID, urlEntry.url)
 						selector.ClearModelAffinity(cfg.ID, actualModel, urlEntry.url)

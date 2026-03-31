@@ -96,13 +96,13 @@ func TestURLSelector_AllCooledDown_ReturnsBest(t *testing.T) {
 
 func TestURLSelector_CooldownExpires(t *testing.T) {
 	sel := NewURLSelector()
-	sel.cooldownBase = 10 * time.Millisecond // 测试用短冷却
+	sel.cooldownBase = 10 * time.Millisecond
 	urls := []string{"https://a.com", "https://b.com"}
-	// 多记几次成功，这样一次失败不会把成功率拉太低
+	// a延迟200ms，b延迟1000ms，都在甜区内（100-3000ms）
 	for range 5 {
-		sel.RecordLatency(1, "https://a.com", 50*time.Millisecond)
+		sel.RecordLatency(1, "https://a.com", 200*time.Millisecond)
 	}
-	sel.RecordLatency(1, "https://b.com", 200*time.Millisecond)
+	sel.RecordLatency(1, "https://b.com", 1000*time.Millisecond)
 	sel.CooldownURL(1, "https://a.com")
 
 	// 冷却期间：a被排除，只能选b
@@ -111,10 +111,7 @@ func TestURLSelector_CooldownExpires(t *testing.T) {
 		t.Errorf("during cooldown: expected b, got %s", url)
 	}
 
-	// 等待冷却过期后：a延迟低且成功率高(5/6≈83%)，应被大多数时候选中
-	// a: weight = (5/6)² / 50 ≈ 0.0139
-	// b: weight = 1.0² / 200 = 0.005
-	// a占比 ≈ 74%
+	// 冷却过期后：a(200ms) vs b(1000ms) → a权重5倍 → a占~83%
 	time.Sleep(15 * time.Millisecond)
 	aCount := 0
 	for range 200 {
@@ -123,23 +120,22 @@ func TestURLSelector_CooldownExpires(t *testing.T) {
 			aCount++
 		}
 	}
-	if aCount < 110 {
-		t.Errorf("after cooldown: expected a selected ~74%%, got %d/200", aCount)
+	if aCount < 120 {
+		t.Errorf("after cooldown: expected a selected ~83%%, got %d/200", aCount)
 	}
 }
 
 func TestURLSelector_IndependentChannels(t *testing.T) {
 	sel := NewURLSelector()
-	// 渠道1: a慢, b快
-	sel.RecordLatency(1, "https://a.com", 500*time.Millisecond)
-	sel.RecordLatency(1, "https://b.com", 50*time.Millisecond)
-	// 渠道2: a快, b慢（与渠道1相反）
-	sel.RecordLatency(2, "https://a.com", 50*time.Millisecond)
-	sel.RecordLatency(2, "https://b.com", 500*time.Millisecond)
+	// 渠道1: a慢(2000ms), b快(200ms)，都在甜区
+	sel.RecordLatency(1, "https://a.com", 2000*time.Millisecond)
+	sel.RecordLatency(1, "https://b.com", 200*time.Millisecond)
+	// 渠道2: a快(200ms), b慢(2000ms)
+	sel.RecordLatency(2, "https://a.com", 200*time.Millisecond)
+	sel.RecordLatency(2, "https://b.com", 2000*time.Millisecond)
 
 	urls := []string{"https://a.com", "https://b.com"}
-	// 渠道2应大多选a（最快），渠道1应大多选b（最快）
-	// 50ms vs 500ms → 快的占 1/50 / (1/50+1/500) = 90.9%
+	// 200ms vs 2000ms → 快的占 1/200 / (1/200+1/2000) = 90.9%
 	ch2a, ch1b := 0, 0
 	for range 200 {
 		if url, _ := sel.SelectURL(2, urls); url == "https://a.com" {
@@ -227,25 +223,26 @@ func TestURLSelector_ExponentialBackoff(t *testing.T) {
 	}
 }
 
-func TestURLSelector_SubMillisecondLatencyWeightedRandom(t *testing.T) {
+func TestURLSelector_SuspiciousLowLatencyNotPreferred(t *testing.T) {
 	sel := NewURLSelector()
-	urls := []string{"https://fast.com", "https://slow.com"}
+	urls := []string{"https://suspicious.com", "https://normal.com"}
 
-	// 复现边界：<1ms 延迟如果被量化为 0，会导致 1/latency 出现 Inf。
-	sel.RecordLatency(1, "https://fast.com", 500*time.Microsecond)
-	sel.RecordLatency(1, "https://slow.com", 100*time.Millisecond)
+	// <100ms 的可疑低延迟会被按500ms算，不会获得额外优势
+	sel.RecordLatency(1, "https://suspicious.com", 500*time.Microsecond) // 0.5ms → 按500ms算
+	sel.RecordLatency(1, "https://normal.com", 200*time.Millisecond)     // 200ms 正常
 
-	fastCount := 0
+	normalCount := 0
 	rounds := 200
 	for range rounds {
 		url, _ := sel.SelectURL(1, urls)
-		if url == "https://fast.com" {
-			fastCount++
+		if url == "https://normal.com" {
+			normalCount++
 		}
 	}
 
-	if fastCount <= rounds/2 {
-		t.Fatalf("expected fast URL to be preferred, fastCount=%d slowCount=%d", fastCount, rounds-fastCount)
+	// normal(200ms) vs suspicious(按500ms算) → normal权重更高
+	if normalCount <= rounds/4 {
+		t.Fatalf("expected normal URL preferred over suspicious low-latency, normalCount=%d", normalCount)
 	}
 }
 

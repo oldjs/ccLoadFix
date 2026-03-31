@@ -103,7 +103,7 @@ func NewURLSelector() *URLSelector {
 		probing:         make(map[urlKey]time.Time),
 		alpha:           0.3,
 		cooldownBase:    2 * time.Minute,
-		cooldownMax:     4 * time.Hour, // 持续失败的URL冷却更久，避免反复撞死URL
+		cooldownMax:     48 * time.Hour, // 死URL最长冷却48小时
 		probeTimeout:    defaultURLSelectorProbeTimeout,
 		probeDial:       (&net.Dialer{}).DialContext,
 		cleanupInterval: defaultURLSelectorCleanupInterval,
@@ -342,20 +342,24 @@ func (s *URLSelector) SelectURLForModel(channelID int64, model string, urls []st
 		return urls[0], 0
 	}
 
-	// 加权随机: weight = successRate² / latency
-	// 成功率低的URL被指数压制，同时延迟低的URL更优
+	// 加权随机: weight = 1/latency，但惩罚两个极端
+	// <100ms 可疑（掺水/没思考），>3s 太慢，100-3000ms 是甜区
 	totalWeight := 0.0
 	weights := make([]float64, len(pool))
 	for i, c := range pool {
 		latency := c.latency
 		if latency <= 0 || math.IsNaN(latency) || math.IsInf(latency, 0) {
-			latency = 500 // 未知URL给个保守默认值，别让它权重爆表
+			latency = 500 // 未知URL给保守默认值
 		}
-		sr := c.successRate
-		if sr < 0.01 {
-			sr = 0.01 // 保底，别完全归零
+		// 可疑低延迟：<100ms 按500ms算，不给额外优势
+		if latency < 100 {
+			latency = 500
 		}
-		weights[i] = (sr * sr) / latency
+		// 超慢：>3000ms 额外惩罚3倍，进一步压低权重
+		if latency > 3000 {
+			latency *= 3
+		}
+		weights[i] = 1.0 / latency
 		totalWeight += weights[i]
 	}
 	if totalWeight <= 0 || math.IsNaN(totalWeight) || math.IsInf(totalWeight, 0) {
@@ -635,14 +639,7 @@ func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 			}
 			return 1
 		}
-		// 成功率高的优先（差距>0.1才算有区别，避免噪声）
-		if ci.successRate-cj.successRate > 0.1 {
-			return -1
-		}
-		if cj.successRate-ci.successRate > 0.1 {
-			return 1
-		}
-		// 已知 vs 未知：已知成功率高的优先，未知的排后面
+		// 已知 vs 未知：有延迟数据的优先，未知的排后面
 		iKnown, jKnown := ci.latency >= 0, cj.latency >= 0
 		if iKnown != jKnown {
 			if iKnown {

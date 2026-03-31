@@ -69,6 +69,7 @@ function initChannelEditorActions() {
         'close-channel-modal': () => invokeChannelEditorAction('closeModal'),
         'add-inline-url': () => invokeChannelEditorAction('addInlineURL'),
         'batch-delete-urls': () => invokeChannelEditorAction('batchDeleteSelectedURLs'),
+        'export-urls': () => invokeChannelEditorAction('exportURLs'),
         'open-key-import-modal': () => invokeChannelEditorAction('openKeyImportModal'),
         'open-key-export-modal': () => invokeChannelEditorAction('openKeyExportModal'),
         'toggle-inline-key-visibility': () => invokeChannelEditorAction('toggleInlineKeyVisibility'),
