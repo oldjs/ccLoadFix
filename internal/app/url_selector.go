@@ -37,6 +37,13 @@ type affinityEntry struct {
 	lastUsed time.Time
 }
 
+// urlModelKey 标识 (渠道, URL, 模型) 三元组，用于 thinking 黑名单
+type urlModelKey struct {
+	channelID int64
+	url       string
+	model     string
+}
+
 // ewmaValue 指数加权移动平均值
 type ewmaValue struct {
 	value    float64 // 当前EWMA值（毫秒）
@@ -62,8 +69,9 @@ type URLSelector struct {
 	latencies    map[urlKey]*ewmaValue
 	cooldowns    map[urlKey]urlCooldownState
 	requests     map[urlKey]*urlRequestCount
-	affinities   map[modelAffinityKey]*affinityEntry // 模型亲和性：上次成功的URL
-	probing      map[urlKey]time.Time
+	affinities        map[modelAffinityKey]*affinityEntry // 模型亲和性：上次成功的URL
+	noThinkingBlklist map[urlModelKey]time.Time          // thinking黑名单：(URL,模型)→过期时间
+	probing           map[urlKey]time.Time
 	alpha        float64       // EWMA权重因子
 	cooldownBase time.Duration // 基础冷却时间
 	cooldownMax  time.Duration // 最大冷却时间
@@ -99,7 +107,8 @@ func NewURLSelector() *URLSelector {
 		latencies:       make(map[urlKey]*ewmaValue),
 		cooldowns:       make(map[urlKey]urlCooldownState),
 		requests:        make(map[urlKey]*urlRequestCount),
-		affinities:      make(map[modelAffinityKey]*affinityEntry),
+		affinities:        make(map[modelAffinityKey]*affinityEntry),
+		noThinkingBlklist: make(map[urlModelKey]time.Time),
 		probing:         make(map[urlKey]time.Time),
 		alpha:           0.3,
 		cooldownBase:    2 * time.Minute,
@@ -146,6 +155,13 @@ func (s *URLSelector) gcLocked(now time.Time, maxAge time.Duration) {
 	for key, aff := range s.affinities {
 		if aff.lastUsed.Before(affinityCutoff) {
 			delete(s.affinities, key)
+		}
+	}
+
+	// 清理过期的 thinking 黑名单
+	for key, expiry := range s.noThinkingBlklist {
+		if now.After(expiry) {
+			delete(s.noThinkingBlklist, key)
 		}
 	}
 }
@@ -271,6 +287,13 @@ func (s *URLSelector) SelectURLForModel(channelID int64, model string, urls []st
 		}
 		if cd, ok := s.cooldowns[key]; ok && now.Before(cd.until) {
 			c.cooled = true
+		}
+		// thinking 黑名单：该URL对该模型不提供thinking，视为不可用
+		if model != "" {
+			umk := urlModelKey{channelID: channelID, url: u, model: model}
+			if expiry, ok := s.noThinkingBlklist[umk]; ok && now.Before(expiry) {
+				c.cooled = true
+			}
 		}
 		c.successRate = s.urlSuccessRateLocked(key)
 		candidates[i] = c
@@ -484,6 +507,83 @@ func (s *URLSelector) GetModelAffinity(channelID int64, model string) (string, b
 		return "", false
 	}
 	return aff.url, true
+}
+
+// MarkNoThinking 标记某URL对某模型不提供thinking，加入黑名单（一周过期）
+// 同时清除该模型的亲和性，防止亲和性指向黑名单URL
+func (s *URLSelector) MarkNoThinking(channelID int64, rawURL, model string) {
+	key := urlModelKey{channelID: channelID, url: rawURL, model: model}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.noThinkingBlklist[key] = time.Now().Add(7 * 24 * time.Hour)
+
+	// 清除指向这个URL的亲和性
+	ak := modelAffinityKey{channelID: channelID, model: model}
+	if aff, ok := s.affinities[ak]; ok && aff.url == rawURL {
+		delete(s.affinities, ak)
+	}
+}
+
+// IsNoThinking 检查某URL对某模型是否在 thinking 黑名单中
+func (s *URLSelector) IsNoThinking(channelID int64, rawURL, model string) bool {
+	key := urlModelKey{channelID: channelID, url: rawURL, model: model}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	expiry, ok := s.noThinkingBlklist[key]
+	return ok && time.Now().Before(expiry)
+}
+
+// NoThinkingEntry 黑名单条目（给前端/API用）
+type NoThinkingEntry struct {
+	URL       string `json:"url"`
+	Model     string `json:"model"`
+	ExpiresAt string `json:"expires_at"` // RFC3339
+}
+
+// GetNoThinkingList 获取指定渠道的 thinking 黑名单列表
+func (s *URLSelector) GetNoThinkingList(channelID int64) []NoThinkingEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	now := time.Now()
+	var list []NoThinkingEntry
+	for key, expiry := range s.noThinkingBlklist {
+		if key.channelID == channelID && now.Before(expiry) {
+			list = append(list, NoThinkingEntry{
+				URL:       key.url,
+				Model:     key.model,
+				ExpiresAt: expiry.Format(time.RFC3339),
+			})
+		}
+	}
+	return list
+}
+
+// ClearNoThinking 清除指定渠道的 thinking 黑名单（全部或指定 URL+model）
+func (s *URLSelector) ClearNoThinking(channelID int64, rawURL, model string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cleared := 0
+	for key := range s.noThinkingBlklist {
+		if key.channelID != channelID {
+			continue
+		}
+		// 指定了 URL 或 model 就精确匹配，没指定就全清
+		if rawURL != "" && key.url != rawURL {
+			continue
+		}
+		if model != "" && key.model != model {
+			continue
+		}
+		delete(s.noThinkingBlklist, key)
+		cleared++
+	}
+	return cleared
 }
 
 // CooldownURL 对URL施加指数退避冷却

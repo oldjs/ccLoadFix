@@ -442,9 +442,9 @@ func TestProxy_MultiURLFirstAttempt_UsesAffinityAndWeightedRandom(t *testing.T) 
 	}
 	channelID := configs[0].ID
 
-	// 预热EWMA
-	env.server.urlSelector.RecordLatency(channelID, upstreamFast.URL, 5*time.Millisecond)
-	env.server.urlSelector.RecordLatency(channelID, upstreamSlow.URL, 30*time.Millisecond)
+	// 预热EWMA（延迟要在100-3000ms甜区内，<100ms会被按500ms算）
+	env.server.urlSelector.RecordLatency(channelID, upstreamFast.URL, 200*time.Millisecond)
+	env.server.urlSelector.RecordLatency(channelID, upstreamSlow.URL, 2000*time.Millisecond)
 
 	// 测试1: 同模型连续请求应该命中亲和性（首次成功后一直用同一个URL）
 	for range 10 {

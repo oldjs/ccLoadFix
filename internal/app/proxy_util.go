@@ -91,7 +91,8 @@ type fwResult struct {
 	// [INFO] SSE错误事件（2025-12新增）
 	// 用于捕获SSE流中的error事件（如1308错误），在流结束后触发冷却逻辑
 	// 虽然HTTP状态码是200，但error事件表示实际上发生了错误
-	SSEErrorEvent []byte // SSE流中检测到的最后一个error事件的完整JSON
+	SSEErrorEvent    []byte // SSE流中检测到的最后一个error事件的完整JSON
+	HasThinkingBlock bool   // Claude thinking 检测：SSE流中是否出现过 thinking 块
 
 	// OpenAI service_tier（2026-03新增）
 	// 响应中的 service_tier 字段决定计费倍率：priority=2x, flex=0.5x, default=1x

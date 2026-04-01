@@ -299,6 +299,10 @@ func (s *Server) handleSuccessResponse(
 		if errorEvent := parser.GetLastError(); errorEvent != nil {
 			result.SSEErrorEvent = errorEvent
 		}
+		// 提取 thinking 检测结果（Claude thinking 黑名单用）
+		if p, ok := parser.(*sseUsageParser); ok {
+			result.HasThinkingBlock = p.hasThinkingBlock
+		}
 		streamComplete = parser.IsStreamComplete()
 	}
 
@@ -807,6 +811,12 @@ func isModelNotFoundOnProxy(result *proxyResult) bool {
 	return strings.Contains(body, "unknown provider for model") ||
 		strings.Contains(body, "model_not_found") ||
 		strings.Contains(body, "does not exist")
+}
+
+// requestHasThinkingParam 检查请求体里有没有 "thinking" 参数
+// 只做字节级检查，不解析JSON（快）
+func requestHasThinkingParam(body []byte) bool {
+	return bytes.Contains(body, []byte(`"thinking"`))
 }
 
 func shouldCheckSoftErrorForChannelType(channelType string) bool {

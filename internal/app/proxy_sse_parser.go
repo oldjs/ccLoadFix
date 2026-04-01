@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"slices"
 	"strings"
 )
 
@@ -44,6 +43,9 @@ type sseUsageParser struct {
 	// OpenAI: data: [DONE]
 	// Anthropic: event: message_stop
 	streamComplete bool
+
+	// thinking检测：SSE里是否出现过 content_block.type="thinking" 或 delta.type="thinking_delta"
+	hasThinkingBlock bool
 }
 
 type jsonUsageParser struct {
@@ -177,15 +179,18 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		return nil // 不解析usage，避免误判
 	}
 
-	// 已知无用事件（不包含usage）
-	ignoredEvents := []string{
-		"ping",                // 心跳事件
-		"content_block_start", // Claude内容块开始（无usage）
-		"content_block_delta", // Claude增量内容（无usage）
+	// thinking检测：从 content_block_start / content_block_delta 里捕捉 thinking 信号
+	// 只做字符串匹配，不解析JSON（这些事件量大，要快）
+	if eventType == "content_block_start" || eventType == "content_block_delta" {
+		if !p.hasThinkingBlock && strings.Contains(data, `"thinking"`) {
+			p.hasThinkingBlock = true
+		}
+		return nil // 这些事件不含usage，不需要JSON解析
 	}
 
-	if eventType != "" && slices.Contains(ignoredEvents, eventType) {
-		return nil // 跳过已知无用事件
+	// 已知无用事件
+	if eventType == "ping" {
+		return nil
 	}
 
 	// 解析JSON数据

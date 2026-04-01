@@ -519,6 +519,8 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.DELETE("/channels/:id/cooldown", s.HandleClearChannelAllCooldowns) // 一键清除所有冷却
 		admin.POST("/channels/:id/keys/:keyIndex/cooldown", s.HandleSetKeyCooldown)
 		admin.DELETE("/channels/:id/keys/:keyIndex", s.HandleDeleteAPIKey)
+		admin.GET("/channels/:id/no-thinking", s.HandleGetNoThinkingList)       // 查询thinking黑名单
+		admin.DELETE("/channels/:id/no-thinking", s.HandleClearNoThinking)      // 清除thinking黑名单
 
 		// 统计分析
 		admin.GET("/logs", s.HandleErrors)

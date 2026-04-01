@@ -104,3 +104,45 @@ func (s *Server) HandleSetKeyCooldown(c *gin.Context) {
 
 	RespondJSON(c, http.StatusOK, gin.H{"message": fmt.Sprintf("Key #%d 已冷却 %d 毫秒", keyIndex+1, req.DurationMs)})
 }
+
+// HandleGetNoThinkingList 获取渠道的 thinking 黑名单
+// GET /admin/channels/:id/no-thinking
+func (s *Server) HandleGetNoThinkingList(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel ID")
+		return
+	}
+	if s.urlSelector == nil {
+		RespondJSON(c, http.StatusOK, []any{})
+		return
+	}
+	list := s.urlSelector.GetNoThinkingList(id)
+	if list == nil {
+		list = []NoThinkingEntry{}
+	}
+	RespondJSON(c, http.StatusOK, list)
+}
+
+// HandleClearNoThinking 清除渠道的 thinking 黑名单
+// DELETE /admin/channels/:id/no-thinking
+func (s *Server) HandleClearNoThinking(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel ID")
+		return
+	}
+	if s.urlSelector == nil {
+		RespondJSON(c, http.StatusOK, gin.H{"cleared": 0})
+		return
+	}
+
+	// 支持精确清除：?url=xxx&model=yyy，不传就全清
+	rawURL := c.Query("url")
+	model := c.Query("model")
+	cleared := s.urlSelector.ClearNoThinking(id, rawURL, model)
+	RespondJSON(c, http.StatusOK, gin.H{
+		"cleared": cleared,
+		"message": fmt.Sprintf("已清除 %d 条黑名单", cleared),
+	})
+}

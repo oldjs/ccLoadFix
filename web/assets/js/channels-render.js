@@ -109,6 +109,23 @@ function getChannelTypeConfig(channelType) {
  * @param {string} channelType - 渠道类型
  * @returns {string} 徽章HTML
  */
+// 渠道列表URL摘要：移动端友好，多URL截断显示
+function formatURLSummary(rawURL) {
+  if (!rawURL) return '';
+  const urls = rawURL.split('\n').map(u => u.trim()).filter(Boolean);
+  if (urls.length === 0) return '';
+
+  // 提取第一个URL的域名
+  let first = urls[0];
+  try {
+    const u = new URL(first);
+    first = u.hostname + (u.port ? ':' + u.port : '');
+  } catch { /* 解析失败用原始值 */ }
+
+  if (urls.length === 1) return first;
+  return `${first} (+${urls.length - 1} urls)`;
+}
+
 function buildChannelTypeBadge(channelType) {
   const config = getChannelTypeConfig(channelType);
   return `<span style="background: ${config.bgColor}; color: ${config.color}; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; border: 1px solid ${config.borderColor}; letter-spacing: 0.025em; text-transform: uppercase;">${config.text}</span>`;
@@ -252,6 +269,7 @@ function createChannelCard(channel) {
     name: channel.name,
     typeBadge: buildChannelTypeBadge(channelTypeRaw),
     url: channel.url,
+    urlSummary: formatURLSummary(channel.url),
     modelsText: modelsText,
     priority: channel.priority,
     effectivePriorityHtml: buildEffectivePriorityHtml(channel),

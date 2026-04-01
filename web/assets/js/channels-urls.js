@@ -107,6 +107,31 @@ function createURLRow(index) {
     row.insertBefore(statusTd, lastTd);
     row.insertBefore(latencyTd, lastTd);
     row.insertBefore(requestsTd, lastTd);
+
+    // thinking 黑名单标记
+    const blocked = noThinkingMap[url];
+    if (blocked && blocked.length > 0) {
+      const tag = document.createElement('div');
+      tag.className = 'no-thinking-tag';
+      tag.title = (window.t('channels.noThinkingModels') || 'No thinking') + ': ' + blocked.join(', ');
+      tag.innerHTML = '<span class="no-thinking-icon">!</span> ' + blocked.map(m => {
+        const short = m.replace(/^claude-/, '').replace(/-thinking$/, '-think');
+        return `<span class="no-thinking-model">${short}</span>`;
+      }).join(' ');
+      // 清除按钮
+      const clearBtn = document.createElement('button');
+      clearBtn.className = 'no-thinking-clear-btn';
+      clearBtn.textContent = 'x';
+      clearBtn.title = window.t('channels.clearNoThinking') || 'Clear blacklist';
+      clearBtn.onclick = (e) => {
+        e.stopPropagation();
+        clearNoThinkingList(editingChannelId, url);
+      };
+      tag.appendChild(clearBtn);
+      // 插到URL输入框下面
+      const urlCell = row.querySelector('.inline-url-col-url');
+      if (urlCell) urlCell.appendChild(tag);
+    }
   }
 
   return row;
@@ -418,21 +443,55 @@ function hasURLStats() {
   return Object.keys(urlStatsMap).length > 0;
 }
 
+// thinking黑名单：url → [model1, model2, ...]
+let noThinkingMap = {};
+
 async function fetchURLStats(channelId) {
   if (!channelId) return;
   try {
-    const stats = await fetchDataWithAuth(`/admin/channels/${channelId}/url-stats`);
+    // 并行拉 URL stats 和 thinking 黑名单
+    const [stats, noThinking] = await Promise.all([
+      fetchDataWithAuth(`/admin/channels/${channelId}/url-stats`),
+      fetchDataWithAuth(`/admin/channels/${channelId}/no-thinking`).catch(() => []),
+    ]);
     urlStatsMap = {};
     if (Array.isArray(stats)) {
       for (const s of stats) {
         urlStatsMap[s.url] = s;
       }
     }
-    if (hasURLStats()) {
+    // 按URL分组黑名单
+    noThinkingMap = {};
+    if (Array.isArray(noThinking)) {
+      for (const entry of noThinking) {
+        if (!noThinkingMap[entry.url]) noThinkingMap[entry.url] = [];
+        noThinkingMap[entry.url].push(entry.model);
+      }
+    }
+    if (hasURLStats() || Object.keys(noThinkingMap).length > 0) {
       renderInlineURLTable();
     }
   } catch (e) {
     console.error('Failed to fetch URL stats', e);
+  }
+}
+
+// 清除指定渠道的 thinking 黑名单
+async function clearNoThinkingList(channelId, url, model) {
+  if (!channelId) return;
+  try {
+    let endpoint = `/admin/channels/${channelId}/no-thinking`;
+    const params = [];
+    if (url) params.push(`url=${encodeURIComponent(url)}`);
+    if (model) params.push(`model=${encodeURIComponent(model)}`);
+    if (params.length) endpoint += '?' + params.join('&');
+
+    await fetchDataWithAuth(endpoint, { method: 'DELETE' });
+    window.showNotification(window.t('channels.noThinkingCleared') || 'Thinking blacklist cleared', 'success');
+    await fetchURLStats(channelId);
+  } catch (e) {
+    console.error('Failed to clear no-thinking list', e);
+    window.showNotification(window.t('common.failed') + ': ' + e.message, 'error');
   }
 }
 

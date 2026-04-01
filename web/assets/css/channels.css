@@ -1545,6 +1545,53 @@
       background: var(--neutral-400);
     }
 
+    /* thinking 黑名单标记 */
+    .no-thinking-tag {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 4px;
+      padding: 2px 6px;
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      border-radius: 4px;
+      font-size: 11px;
+      color: #DC2626;
+      flex-wrap: wrap;
+    }
+    .no-thinking-icon {
+      font-weight: 700;
+      font-size: 10px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #DC2626;
+      color: #fff;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .no-thinking-model {
+      background: rgba(239, 68, 68, 0.15);
+      padding: 0 4px;
+      border-radius: 3px;
+      font-size: 10px;
+    }
+    .no-thinking-clear-btn {
+      margin-left: auto;
+      border: none;
+      background: transparent;
+      color: #DC2626;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 0 4px;
+      line-height: 1;
+      opacity: 0.6;
+    }
+    .no-thinking-clear-btn:hover { opacity: 1; }
+
     .model-select {
       color: var(--neutral-900);
       background: rgba(255, 255, 255, 0.9);
