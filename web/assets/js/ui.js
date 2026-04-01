@@ -468,7 +468,7 @@
       return channelTypesCache;
     }
 
-    const types = await fetchData('/public/channel-types');
+    const types = await fetchDataWithAuth('/public/channel-types');
     channelTypesCache = types || [];
     return channelTypesCache;
   }

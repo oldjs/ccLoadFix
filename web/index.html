@@ -10,9 +10,14 @@
   <title data-i18n="index.title">Claude Code & Codex Proxy 代理服务</title>
   <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
   <script>
-    window.__prefetch_summary = fetch('/public/summary?range=today')
-      .then(r => r.json())
-      .catch(() => null);
+    // prefetch 也要带 token，不然被 RequireTokenAuth 拦截
+    window.__prefetch_summary = (() => {
+      const tk = localStorage.getItem('ccload_token');
+      if (!tk) return Promise.resolve(null);
+      return fetch('/public/summary?range=today', {
+        headers: { 'Authorization': 'Bearer ' + tk }
+      }).then(r => r.json()).catch(() => null);
+    })();
   </script>
   <script defer src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
   <script defer src="/web/assets/locales/en.js?v=__VERSION__"></script>

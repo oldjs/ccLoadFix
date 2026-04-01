@@ -32,7 +32,7 @@
         }
         // 预取失败或后续轮询走正常路径
         if (!data) {
-          data = await fetchData(`/public/summary?range=${currentTimeRange}`);
+          data = await fetchDataWithAuth(`/public/summary?range=${currentTimeRange}`);
         }
         statsData = data || statsData;
         updateStatsDisplay();
