@@ -1530,7 +1530,7 @@ body {
   }
 
   .hero-header {
-    padding: var(--space-4);
+    padding: var(--space-3);
   }
 
   .hero-icon {
@@ -1634,6 +1634,7 @@ body {
   .filter-label {
     margin-right: 0;
     text-align: right;
+    font-size: 11px;
   }
 
   .filter-input,

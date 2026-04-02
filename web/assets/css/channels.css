@@ -564,7 +564,7 @@
     }
 
     .channel-table thead th {
-      height: 44px;
+      height: 38px;
       padding: 8px 10px;
       white-space: nowrap;
       user-select: none;
@@ -592,7 +592,7 @@
 
     .channel-table tbody tr,
     .channel-table tbody td {
-      height: 90px;
+      height: auto;
     }
 
     .channel-table tbody tr {
@@ -1057,7 +1057,7 @@
 
     .health-block {
       width: 100%;
-      height: 12px;
+      height: 10px;
       border-radius: 1px;
       transition: transform 0.2s ease, box-shadow 0.2s ease;
       position: relative;
@@ -2008,19 +2008,20 @@
 
     @media (max-width: 768px) {
       .channel-page-hero {
-        gap: 12px;
+        gap: 10px;
       }
 
       .channel-page-actions {
         width: 100%;
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 8px;
+        gap: 6px;
       }
 
       .channel-page-action-btn {
         width: 100%;
         padding: 8px 10px;
+        min-height: 36px;
         white-space: nowrap;
       }
 
@@ -2297,7 +2298,7 @@
 
       .channel-table tbody {
         display: grid;
-        gap: 12px;
+        gap: 8px;
       }
 
       .channel-table tbody tr {
@@ -2305,9 +2306,9 @@
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 10px 12px;
         height: auto;
-        padding: 14px;
+        padding: 10px;
         border: 1px solid rgba(148, 163, 184, 0.22);
-        border-radius: 16px;
+        border-radius: 12px;
         background: rgba(255, 255, 255, 0.98);
         box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
         position: relative;
@@ -2336,8 +2337,8 @@
 
       .channel-table .ch-col-checkbox {
         position: absolute;
-        top: 14px;
-        right: 14px;
+        top: 10px;
+        right: 10px;
         width: auto !important;
         text-align: right;
         z-index: 1;
