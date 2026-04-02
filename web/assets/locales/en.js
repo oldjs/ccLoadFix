@@ -1074,6 +1074,14 @@ window.I18N_LOCALES['en'] = {
   'channels.test.noResponseBody': '(No response body)',
   'channels.test.responseHeaders': 'Response Headers',
 
+  // Channel URL Summary
+  'channels.urlSummary.title': 'Channel URL Stats',
+  'channels.urlSummary.toggleTitle': 'Collapse/Expand',
+  'channels.urlSummary.total': 'Total',
+  'channels.urlSummary.urls': 'URLs',
+  'channels.urlSummary.channels': 'Channels',
+  'channels.urlSummary.cooldown': 'Cooldown',
+
   // Channel import/export
   'channels.import.exportHttpFailed': 'Export failed (HTTP {status})',
   'channels.import.summary': 'Import complete: {created} created, {updated} updated, {skipped} skipped',

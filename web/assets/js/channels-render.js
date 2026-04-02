@@ -413,3 +413,125 @@ function renderChannels(channelsToRender = channels) {
     updateBatchChannelSelectionUI();
   }
 }
+
+// ==================== URL Summary Panel ====================
+
+const URL_SUMMARY_COLLAPSED_KEY = 'channels.urlSummaryCollapsed';
+
+function getURLRating(totalURLs) {
+  const levels = [
+    { min: 1001, zh: '宇宙级军火库', en: 'Cosmic Arsenal' },
+    { min: 501,  zh: '军火大亨',     en: 'Arms Dealer' },
+    { min: 201,  zh: '富可敌国',     en: 'Rival Nations' },
+    { min: 51,   zh: '兵强马壮',     en: 'Battle Ready' },
+    { min: 11,   zh: '初具规模',     en: 'Taking Shape' },
+    { min: 1,    zh: '刚起步',       en: 'Just Started' },
+    { min: 0,    zh: '一穷二白',     en: 'Empty Hands' }
+  ];
+  for (const l of levels) {
+    if (totalURLs >= l.min) return l;
+  }
+  return levels[levels.length - 1];
+}
+
+function getCooldownComment(cooldown, total) {
+  if (total === 0) return { zh: '', en: '' };
+  if (cooldown === 0) return { zh: '全员满血', en: 'All Clear' };
+  const ratio = cooldown / total;
+  if (ratio > 0.5) return { zh: '半数阵亡', en: 'Half Down' };
+  if (ratio > 0.3) return { zh: '伤亡惨重', en: 'Heavy Losses' };
+  if (ratio > 0.1) return { zh: '小有损伤', en: 'Minor Damage' };
+  return { zh: '状态良好', en: 'Good Shape' };
+}
+
+function renderURLSummary(data) {
+  const panel = document.getElementById('urlSummaryPanel');
+  const cardsEl = document.getElementById('urlSummaryCards');
+  const ratingEl = document.getElementById('urlSummaryRating');
+  const toggleBtn = document.getElementById('urlSummaryToggle');
+  const bodyEl = document.getElementById('urlSummaryBody');
+  if (!panel || !cardsEl) return;
+
+  const isZh = (window.i18n && window.i18n.locale || 'zh-CN').startsWith('zh');
+
+  // Rating
+  const rating = getURLRating(data.total_urls);
+  const cooldownComment = getCooldownComment(data.total_cooldown, data.total_channels);
+  const ratingText = isZh ? rating.zh : rating.en;
+  const commentText = isZh ? cooldownComment.zh : cooldownComment.en;
+  ratingEl.textContent = commentText ? `${ratingText} · ${commentText}` : ratingText;
+
+  // Build cards
+  const typeConfigs = {
+    anthropic: { label: 'Claude', icon: '🟣', color: '#8b5cf6' },
+    openai:    { label: 'OpenAI', icon: '🟢', color: '#10b981' },
+    gemini:    { label: 'Gemini', icon: '🔵', color: '#2563eb' },
+    codex:     { label: 'Codex',  icon: '🟩', color: '#059669' }
+  };
+
+  let html = '';
+
+  // Per-type cards
+  for (const t of data.types) {
+    const cfg = typeConfigs[t.channel_type] || { label: t.channel_type, icon: '⚪', color: '#6b7280' };
+    const cooldownBadge = t.cooldown_count > 0
+      ? `<span class="url-summary-cooldown">${t.cooldown_count} ${isZh ? '冷却' : 'cooldown'}</span>`
+      : '';
+    html += `<div class="url-summary-card" style="--card-accent: ${cfg.color}">
+      <div class="url-summary-card-header">
+        <span class="url-summary-card-icon">${cfg.icon}</span>
+        <span class="url-summary-card-label">${cfg.label}</span>
+      </div>
+      <div class="url-summary-card-stats">
+        <div class="url-summary-stat">
+          <span class="url-summary-stat-value">${t.url_count}</span>
+          <span class="url-summary-stat-label">${isZh ? 'URL' : 'URLs'}</span>
+        </div>
+        <div class="url-summary-stat">
+          <span class="url-summary-stat-value">${t.channel_count}</span>
+          <span class="url-summary-stat-label">${isZh ? '渠道' : 'Channels'}</span>
+        </div>
+      </div>
+      ${cooldownBadge}
+    </div>`;
+  }
+
+  // Total card
+  const totalCooldownBadge = data.total_cooldown > 0
+    ? `<span class="url-summary-cooldown">${data.total_cooldown} ${isZh ? '冷却' : 'cooldown'}</span>`
+    : '';
+  html += `<div class="url-summary-card url-summary-card--total">
+    <div class="url-summary-card-header">
+      <span class="url-summary-card-icon">📊</span>
+      <span class="url-summary-card-label">${isZh ? '总计' : 'Total'}</span>
+    </div>
+    <div class="url-summary-card-stats">
+      <div class="url-summary-stat">
+        <span class="url-summary-stat-value">${data.total_urls}</span>
+        <span class="url-summary-stat-label">${isZh ? 'URL' : 'URLs'}</span>
+      </div>
+      <div class="url-summary-stat">
+        <span class="url-summary-stat-value">${data.total_channels}</span>
+        <span class="url-summary-stat-label">${isZh ? '渠道' : 'Channels'}</span>
+      </div>
+    </div>
+    ${totalCooldownBadge}
+  </div>`;
+
+  cardsEl.innerHTML = html;
+  panel.style.display = '';
+
+  // Collapse state from localStorage
+  const collapsed = localStorage.getItem(URL_SUMMARY_COLLAPSED_KEY) === '1';
+  if (collapsed) {
+    bodyEl.classList.add('url-summary-body--collapsed');
+    toggleBtn.classList.add('url-summary-toggle--collapsed');
+  }
+
+  // Toggle handler (idempotent: remove old listener)
+  toggleBtn.onclick = () => {
+    const isCollapsed = bodyEl.classList.toggle('url-summary-body--collapsed');
+    toggleBtn.classList.toggle('url-summary-toggle--collapsed', isCollapsed);
+    localStorage.setItem(URL_SUMMARY_COLLAPSED_KEY, isCollapsed ? '1' : '0');
+  };
+}

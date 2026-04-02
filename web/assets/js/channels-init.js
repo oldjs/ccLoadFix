@@ -182,6 +182,9 @@ window.initPageBootstrap({
   await loadDefaultTestContent();
   await loadChannelStatsRange();
 
+  // 加载URL统计面板（不阻塞主渠道加载）
+  loadURLSummary();
+
   await loadChannels(initialType);
   await loadChannelStats();
   highlightFromHash();

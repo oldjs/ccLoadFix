@@ -131,6 +131,18 @@ function toSafeNumber(value) {
   return Number.isFinite(num) ? num : 0;
 }
 
+// 加载渠道URL统计
+async function loadURLSummary() {
+  try {
+    const data = await fetchDataWithAuth('/admin/channels/url-summary');
+    if (data) {
+      renderURLSummary(data);
+    }
+  } catch (e) {
+    console.error('Failed to load URL summary', e);
+  }
+}
+
 // 加载默认测试内容（从系统设置）
 async function loadDefaultTestContent() {
   try {

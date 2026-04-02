@@ -498,6 +498,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/channels", s.HandleChannels)
 		admin.POST("/channels", s.HandleChannels)
 		admin.GET("/channels/export", s.HandleExportChannelsCSV)
+		admin.GET("/channels/url-summary", s.HandleURLSummary)
 		admin.POST("/channels/import", s.HandleImportChannelsCSV)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
 		admin.POST("/channels/batch-enabled", s.HandleBatchSetEnabled)      // 批量启用/禁用渠道

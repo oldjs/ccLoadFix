@@ -1,3 +1,193 @@
+    /* ==================== URL Summary Panel ==================== */
+    .url-summary-panel {
+      background: var(--glass-bg, rgba(255, 255, 255, 0.85));
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--neutral-200, #e5e7eb);
+      border-radius: 12px;
+      padding: 16px 20px;
+      margin-bottom: 12px;
+    }
+
+    .url-summary-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .url-summary-title-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .url-summary-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--neutral-800, #1f2937);
+    }
+
+    .url-summary-rating {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--primary-600, #4f46e5);
+      background: var(--primary-50, #eef2ff);
+      padding: 2px 10px;
+      border-radius: 20px;
+      border: 1px solid var(--primary-200, #c7d2fe);
+    }
+
+    .url-summary-toggle {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--neutral-500, #6b7280);
+      padding: 4px;
+      border-radius: 6px;
+      transition: transform 0.2s ease, background 0.15s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .url-summary-toggle:hover {
+      background: var(--neutral-100, #f3f4f6);
+    }
+
+    .url-summary-toggle--collapsed {
+      transform: rotate(-90deg);
+    }
+
+    .url-summary-body {
+      overflow: hidden;
+      max-height: 300px;
+      transition: max-height 0.25s ease, opacity 0.2s ease, margin-top 0.2s ease;
+      opacity: 1;
+      margin-top: 14px;
+    }
+
+    .url-summary-body--collapsed {
+      max-height: 0;
+      opacity: 0;
+      margin-top: 0;
+    }
+
+    .url-summary-cards {
+      display: flex;
+      gap: 12px;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: thin;
+      padding-bottom: 4px;
+    }
+
+    .url-summary-cards::-webkit-scrollbar {
+      height: 4px;
+    }
+
+    .url-summary-cards::-webkit-scrollbar-thumb {
+      background: var(--neutral-300, #d1d5db);
+      border-radius: 4px;
+    }
+
+    .url-summary-card {
+      flex: 0 0 auto;
+      min-width: 140px;
+      background: var(--neutral-50, #f9fafb);
+      border: 1px solid var(--neutral-200, #e5e7eb);
+      border-radius: 10px;
+      padding: 14px 16px;
+      border-top: 3px solid var(--card-accent, #6b7280);
+      transition: box-shadow 0.15s ease, transform 0.15s ease;
+    }
+
+    .url-summary-card:hover {
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+      transform: translateY(-1px);
+    }
+
+    .url-summary-card--total {
+      background: linear-gradient(135deg, var(--primary-50, #eef2ff) 0%, var(--neutral-50, #f9fafb) 100%);
+      border-color: var(--primary-200, #c7d2fe);
+      --card-accent: var(--primary-500, #6366f1);
+    }
+
+    .url-summary-card-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+
+    .url-summary-card-icon {
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    .url-summary-card-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--neutral-700, #374151);
+    }
+
+    .url-summary-card-stats {
+      display: flex;
+      gap: 16px;
+    }
+
+    .url-summary-stat {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .url-summary-stat-value {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--neutral-900, #111827);
+      line-height: 1.2;
+    }
+
+    .url-summary-stat-label {
+      font-size: 11px;
+      color: var(--neutral-500, #6b7280);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .url-summary-cooldown {
+      display: inline-block;
+      margin-top: 8px;
+      font-size: 11px;
+      font-weight: 500;
+      color: #dc2626;
+      background: #fee2e2;
+      padding: 2px 8px;
+      border-radius: 10px;
+      border: 1px solid #fca5a5;
+    }
+
+    /* 移动端：卡片横向滚动 */
+    @media (max-width: 768px) {
+      .url-summary-panel {
+        padding: 12px 14px;
+        margin-bottom: 8px;
+      }
+
+      .url-summary-card {
+        min-width: 120px;
+        padding: 10px 12px;
+      }
+
+      .url-summary-stat-value {
+        font-size: 18px;
+      }
+
+      .url-summary-rating {
+        font-size: 12px;
+        padding: 1px 8px;
+      }
+    }
+
     /* 响应式布局样式 */
     @media (max-width: 640px) {
 

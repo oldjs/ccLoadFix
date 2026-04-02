@@ -1074,6 +1074,14 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.test.noResponseBody': '(无响应体)',
   'channels.test.responseHeaders': '响应头',
 
+  // 渠道URL统计
+  'channels.urlSummary.title': '渠道 URL 统计',
+  'channels.urlSummary.toggleTitle': '折叠/展开',
+  'channels.urlSummary.total': '总计',
+  'channels.urlSummary.urls': 'URL',
+  'channels.urlSummary.channels': '渠道',
+  'channels.urlSummary.cooldown': '冷却',
+
   // 渠道导入导出
   'channels.import.exportHttpFailed': '导出失败 (HTTP {status})',
   'channels.import.summary': '导入完成：新增 {created}，更新 {updated}，跳过 {skipped}',

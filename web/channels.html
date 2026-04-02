@@ -60,6 +60,24 @@
           </div>
         </header>
 
+        <!-- URL Summary Panel -->
+        <div id="urlSummaryPanel" class="url-summary-panel" style="display: none;">
+          <div class="url-summary-header">
+            <div class="url-summary-title-row">
+              <span class="url-summary-title" data-i18n="channels.urlSummary.title">渠道 URL 统计</span>
+              <span id="urlSummaryRating" class="url-summary-rating"></span>
+            </div>
+            <button id="urlSummaryToggle" type="button" class="url-summary-toggle" data-i18n-title="channels.urlSummary.toggleTitle" title="折叠/展开">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M4 6L8 10L12 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+          <div id="urlSummaryBody" class="url-summary-body">
+            <div id="urlSummaryCards" class="url-summary-cards"></div>
+          </div>
+        </div>
+
         <!-- Filter Bar -->
         <div class="filter-bar">
           <div class="filter-controls">

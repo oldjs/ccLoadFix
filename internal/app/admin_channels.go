@@ -278,6 +278,80 @@ func (s *Server) handleGetChannelKeys(c *gin.Context, id int64) {
 	RespondJSON(c, http.StatusOK, apiKeys)
 }
 
+// URLSummaryTypeInfo 单个渠道类型的URL统计
+type URLSummaryTypeInfo struct {
+	ChannelType   string `json:"channel_type"`
+	ChannelCount  int    `json:"channel_count"`
+	URLCount      int    `json:"url_count"`
+	CooldownCount int    `json:"cooldown_count"`
+}
+
+// URLSummaryResponse 全局URL统计响应
+type URLSummaryResponse struct {
+	Types         []URLSummaryTypeInfo `json:"types"`
+	TotalChannels int                  `json:"total_channels"`
+	TotalURLs     int                  `json:"total_urls"`
+	TotalCooldown int                  `json:"total_cooldown"`
+}
+
+// HandleURLSummary 返回按渠道类型分组的URL总数、渠道数、冷却数
+// GET /admin/channels/url-summary
+func (s *Server) HandleURLSummary(c *gin.Context) {
+	cfgs, err := s.store.ListConfigs(c.Request.Context())
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	now := time.Now()
+	allChannelCooldowns, err := s.getAllChannelCooldowns(c.Request.Context())
+	if err != nil {
+		allChannelCooldowns = make(map[int64]time.Time)
+	}
+
+	// 按类型聚合
+	typeMap := make(map[string]*URLSummaryTypeInfo)
+	typeOrder := make([]string, 0, 4)
+
+	for _, cfg := range cfgs {
+		ct := cfg.ChannelType
+		if ct == "" {
+			ct = "anthropic"
+		}
+
+		info, ok := typeMap[ct]
+		if !ok {
+			info = &URLSummaryTypeInfo{ChannelType: ct}
+			typeMap[ct] = info
+			typeOrder = append(typeOrder, ct)
+		}
+
+		info.ChannelCount++
+		info.URLCount += len(cfg.GetURLs())
+
+		if until, cooled := allChannelCooldowns[cfg.ID]; cooled && until.After(now) {
+			info.CooldownCount++
+		}
+	}
+
+	types := make([]URLSummaryTypeInfo, 0, len(typeOrder))
+	totalChannels, totalURLs, totalCooldown := 0, 0, 0
+	for _, ct := range typeOrder {
+		info := typeMap[ct]
+		types = append(types, *info)
+		totalChannels += info.ChannelCount
+		totalURLs += info.URLCount
+		totalCooldown += info.CooldownCount
+	}
+
+	RespondJSON(c, http.StatusOK, URLSummaryResponse{
+		Types:         types,
+		TotalChannels: totalChannels,
+		TotalURLs:     totalURLs,
+		TotalCooldown: totalCooldown,
+	})
+}
+
 // HandleChannelURLStats 返回多URL渠道各URL的实时状态（延迟、冷却）
 // GET /admin/channels/:id/url-stats
 func (s *Server) HandleChannelURLStats(c *gin.Context) {
