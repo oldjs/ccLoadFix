@@ -92,6 +92,7 @@ window.initPageBootstrap({
   initChannelsPageActions();
   setupFilterListeners();
   setupImportExport();
+  setupURLImportPreview();
   setupKeyImportPreview();
   setupModelImportPreview();
   if (typeof initChannelFormDirtyTracking === 'function') {

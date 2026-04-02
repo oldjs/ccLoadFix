@@ -68,7 +68,10 @@ function initChannelEditorActions() {
       click: {
         'close-channel-modal': () => invokeChannelEditorAction('closeModal'),
         'add-inline-url': () => invokeChannelEditorAction('addInlineURL'),
+        'open-url-import-modal': () => invokeChannelEditorAction('openURLImportModal'),
         'batch-delete-urls': () => invokeChannelEditorAction('batchDeleteSelectedURLs'),
+        'close-url-import-modal': () => invokeChannelEditorAction('closeURLImportModal'),
+        'confirm-url-import': () => invokeChannelEditorAction('confirmURLImport'),
         'export-urls': () => invokeChannelEditorAction('exportURLs'),
         'open-key-import-modal': () => invokeChannelEditorAction('openKeyImportModal'),
         'open-key-export-modal': () => invokeChannelEditorAction('openKeyExportModal'),
@@ -227,6 +230,23 @@ async function saveChannel(event) {
   const validURLs = getValidInlineURLs();
   if (validURLs.length === 0) {
     alert(window.t('channels.fillApiUrlFirst'));
+    return;
+  }
+
+  const invalidURLDetails = typeof getInvalidInlineURLDetails === 'function'
+    ? getInvalidInlineURLDetails()
+    : [];
+  if (invalidURLDetails.length > 0) {
+    const firstInvalid = invalidURLDetails[0];
+    const message = window.t('channels.invalidUrlEntry', {
+      value: firstInvalid.url,
+      reason: window.t(firstInvalid.reasonKey)
+    });
+    if (window.showError) {
+      window.showError(message);
+    } else {
+      alert(message);
+    }
     return;
   }
 

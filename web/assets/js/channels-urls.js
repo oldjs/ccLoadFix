@@ -1,4 +1,8 @@
 // URL 表格管理（与 API Key 表格一致的交互模式）
+const CHANNEL_URL_MAX_LENGTH = 2048;
+const CHANNEL_URL_IMPORT_MAX_INPUT_LENGTH = 50000;
+const CHANNEL_URL_IMPORT_ERROR_PREVIEW_LIMIT = 8;
+
 function parseChannelURLs(input) {
   if (!input || !input.trim()) return [];
 
@@ -6,6 +10,164 @@ function parseChannelURLs(input) {
     .split('\n')
     .map(url => url.trim())
     .filter(Boolean);
+}
+
+function splitImportedChannelURLs(input) {
+  if (!input || !input.trim()) return [];
+
+  return input
+    .split(/[\n,]/)
+    .map(url => url.trim())
+    .filter(Boolean);
+}
+
+function isIPv4Address(host) {
+  const parts = host.split('.');
+  if (parts.length !== 4) return false;
+  return parts.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+}
+
+function isPrivateIPv4(host) {
+  if (!isIPv4Address(host)) return false;
+
+  const [a, b] = host.split('.').map(Number);
+  if (a === 10 || a === 127 || a === 0) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 198 && (b === 18 || b === 19)) return true;
+  return false;
+}
+
+function isPrivateIPv6(host) {
+  const normalized = host.toLowerCase();
+  if (!normalized.includes(':')) return false;
+
+  if (normalized === '::' || normalized === '::1') return true;
+  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
+  if (normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb')) return true;
+
+  const mappedPrefix = '::ffff:';
+  if (normalized.startsWith(mappedPrefix)) {
+    return isPrivateIPv4(normalized.slice(mappedPrefix.length));
+  }
+
+  return false;
+}
+
+function isPrivateHostname(hostname) {
+  const normalized = (hostname || '').toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  if (!normalized) return true;
+  if (normalized === 'localhost' || normalized.endsWith('.localhost') || normalized.endsWith('.local')) return true;
+  if (isPrivateIPv4(normalized) || isPrivateIPv6(normalized)) return true;
+  return false;
+}
+
+function getChannelURLIdentityKey(value) {
+  const trimmed = (value || '').trim();
+  if (!trimmed) return '';
+
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.toString();
+  } catch {
+    return trimmed;
+  }
+}
+
+function validateChannelURL(value) {
+  const trimmed = (value || '').trim();
+  if (!trimmed) {
+    return { valid: false, reasonKey: 'channels.urlValidationMalformed' };
+  }
+  if (trimmed.length > CHANNEL_URL_MAX_LENGTH) {
+    return { valid: false, reasonKey: 'channels.urlValidationTooLong' };
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { valid: false, reasonKey: 'channels.urlValidationMalformed' };
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { valid: false, reasonKey: 'channels.urlValidationProtocol' };
+  }
+  if (isPrivateHostname(parsed.hostname)) {
+    return { valid: false, reasonKey: 'channels.urlValidationPrivate' };
+  }
+
+  return {
+    valid: true,
+    identityKey: parsed.toString(),
+    url: trimmed
+  };
+}
+
+function getChannelURLValidationMessage(reasonKey) {
+  return window.t(reasonKey);
+}
+
+function parseURLImportInput(input) {
+  const rawInput = input || '';
+  const trimmedInput = rawInput.trim();
+  const result = {
+    validURLs: [],
+    invalidEntries: [],
+    duplicateCount: 0,
+    totalEntries: 0,
+    tooLong: false
+  };
+
+  if (!trimmedInput) {
+    return result;
+  }
+  if (rawInput.length > CHANNEL_URL_IMPORT_MAX_INPUT_LENGTH) {
+    result.tooLong = true;
+    result.invalidEntries.push({
+      value: '',
+      reasonKey: 'channels.urlImportInputTooLong'
+    });
+    return result;
+  }
+
+  const entries = splitImportedChannelURLs(trimmedInput);
+  result.totalEntries = entries.length;
+
+  const seen = new Set();
+  entries.forEach((entry) => {
+    const validation = validateChannelURL(entry);
+    if (!validation.valid) {
+      result.invalidEntries.push({
+        value: entry,
+        reasonKey: validation.reasonKey
+      });
+      return;
+    }
+
+    if (seen.has(validation.identityKey)) {
+      result.duplicateCount++;
+      return;
+    }
+
+    seen.add(validation.identityKey);
+    result.validURLs.push(validation.url);
+  });
+
+  return result;
+}
+
+function getInvalidInlineURLDetails() {
+  return getValidInlineURLs()
+    .map((url, index) => ({ index, url, validation: validateChannelURL(url) }))
+    .filter((entry) => !entry.validation.valid)
+    .map((entry) => ({
+      index: entry.index,
+      url: entry.url,
+      reasonKey: entry.validation.reasonKey
+    }));
 }
 
 function getValidInlineURLs() {
@@ -296,6 +458,187 @@ function batchDeleteSelectedURLs() {
   selectedURLIndices.clear();
   renderInlineURLTable();
   markChannelFormDirty();
+}
+
+function setURLImportConfirmEnabled(enabled) {
+  const button = document.getElementById('confirmUrlImportBtn');
+  if (!button) return;
+
+  button.disabled = !enabled;
+}
+
+function resetURLImportPreview() {
+  const previewContent = document.getElementById('urlImportPreviewContent');
+  const previewMeta = document.getElementById('urlImportPreviewMeta');
+  const errorBox = document.getElementById('urlImportErrorBox');
+  const errorSummary = document.getElementById('urlImportErrorSummary');
+  const errorList = document.getElementById('urlImportErrorList');
+  const countSpan = document.getElementById('urlImportCount');
+
+  if (countSpan) countSpan.textContent = '0';
+  if (previewContent) previewContent.classList.add('hidden');
+  if (previewMeta) {
+    previewMeta.textContent = '';
+    previewMeta.classList.add('hidden');
+  }
+  if (errorSummary) errorSummary.textContent = '';
+  if (errorList) errorList.innerHTML = '';
+  if (errorBox) errorBox.classList.add('hidden');
+
+  setURLImportConfirmEnabled(false);
+}
+
+function buildURLImportPreviewMeta(result) {
+  const segments = [];
+  if (result.duplicateCount > 0) {
+    segments.push(window.t('channels.urlImportDuplicatesIgnored', { count: result.duplicateCount }));
+  }
+  if (result.invalidEntries.length > 0) {
+    segments.push(window.t('channels.urlImportInvalidEntries', { count: result.invalidEntries.length }));
+  }
+  return segments.join(' · ');
+}
+
+function updateURLImportPreview() {
+  const textarea = document.getElementById('urlImportTextarea');
+  const previewContent = document.getElementById('urlImportPreviewContent');
+  const previewMeta = document.getElementById('urlImportPreviewMeta');
+  const errorBox = document.getElementById('urlImportErrorBox');
+  const errorSummary = document.getElementById('urlImportErrorSummary');
+  const errorList = document.getElementById('urlImportErrorList');
+  const countSpan = document.getElementById('urlImportCount');
+  if (!textarea || !previewContent || !previewMeta || !errorBox || !errorSummary || !errorList || !countSpan) return;
+
+  const result = parseURLImportInput(textarea.value);
+  const hasInput = Boolean(textarea.value.trim());
+  const hasResult = hasInput && (result.validURLs.length > 0 || result.invalidEntries.length > 0 || result.tooLong);
+
+  if (!hasResult) {
+    resetURLImportPreview();
+    return;
+  }
+
+  countSpan.textContent = String(result.validURLs.length);
+  previewContent.classList.remove('hidden');
+
+  const metaText = buildURLImportPreviewMeta(result);
+  if (metaText) {
+    previewMeta.textContent = metaText;
+    previewMeta.classList.remove('hidden');
+  } else {
+    previewMeta.textContent = '';
+    previewMeta.classList.add('hidden');
+  }
+
+  errorList.innerHTML = '';
+  if (result.invalidEntries.length > 0 || result.tooLong) {
+    errorBox.classList.remove('hidden');
+    errorSummary.textContent = result.tooLong
+      ? window.t('channels.urlImportInputTooLong', { max: CHANNEL_URL_IMPORT_MAX_INPUT_LENGTH })
+      : window.t('channels.urlImportInvalidSummary', { count: result.invalidEntries.length });
+
+    result.invalidEntries.slice(0, CHANNEL_URL_IMPORT_ERROR_PREVIEW_LIMIT).forEach((entry) => {
+      const item = document.createElement('li');
+      const reason = getChannelURLValidationMessage(entry.reasonKey);
+      item.textContent = entry.value ? `${entry.value} - ${reason}` : reason;
+      errorList.appendChild(item);
+    });
+
+    if (result.invalidEntries.length > CHANNEL_URL_IMPORT_ERROR_PREVIEW_LIMIT) {
+      const item = document.createElement('li');
+      item.textContent = window.t('channels.urlImportInvalidMore', {
+        count: result.invalidEntries.length - CHANNEL_URL_IMPORT_ERROR_PREVIEW_LIMIT
+      });
+      errorList.appendChild(item);
+    }
+  } else {
+    errorSummary.textContent = '';
+    errorBox.classList.add('hidden');
+  }
+
+  setURLImportConfirmEnabled(result.validURLs.length > 0 && !result.tooLong);
+}
+
+function setupURLImportPreview() {
+  const textarea = document.getElementById('urlImportTextarea');
+  if (!textarea || textarea.dataset.previewBound) return;
+
+  textarea.addEventListener('input', updateURLImportPreview);
+  textarea.dataset.previewBound = '1';
+}
+
+function openURLImportModal() {
+  const textarea = document.getElementById('urlImportTextarea');
+  if (!textarea) return;
+
+  textarea.value = '';
+  resetURLImportPreview();
+  document.getElementById('urlImportModal').classList.add('show');
+  setTimeout(() => textarea.focus(), 100);
+}
+
+function closeURLImportModal() {
+  document.getElementById('urlImportModal').classList.remove('show');
+}
+
+function confirmURLImport() {
+  const textarea = document.getElementById('urlImportTextarea');
+  if (!textarea) return;
+
+  const input = textarea.value.trim();
+  if (!input) {
+    window.showNotification(window.t('channels.enterAtLeastOneUrl'), 'warning');
+    return;
+  }
+
+  const result = parseURLImportInput(textarea.value);
+  if (result.tooLong) {
+    window.showNotification(window.t('channels.urlImportInputTooLong', { max: CHANNEL_URL_IMPORT_MAX_INPUT_LENGTH }), 'warning');
+    return;
+  }
+  if (result.validURLs.length === 0) {
+    window.showNotification(window.t('channels.noValidUrlParsed'), 'warning');
+    return;
+  }
+
+  const existingKeys = new Set(
+    inlineURLTableData
+      .map((url) => getChannelURLIdentityKey(url))
+      .filter(Boolean)
+  );
+  let addedCount = 0;
+  let existingCount = 0;
+
+  if (inlineURLTableData.length === 1 && !String(inlineURLTableData[0] || '').trim()) {
+    inlineURLTableData = [];
+  }
+
+  result.validURLs.forEach((url) => {
+    const identityKey = getChannelURLIdentityKey(url);
+    if (existingKeys.has(identityKey)) {
+      existingCount++;
+      return;
+    }
+
+    inlineURLTableData.push(url);
+    existingKeys.add(identityKey);
+    addedCount++;
+  });
+
+  closeURLImportModal();
+  renderInlineURLTable();
+  if (addedCount > 0) markChannelFormDirty();
+
+  if (addedCount === 0) {
+    window.showNotification(window.t('channels.allUrlsExist'), 'info');
+    return;
+  }
+
+  const skippedCount = result.duplicateCount + result.invalidEntries.length + existingCount;
+  const message = skippedCount > 0
+    ? window.t('channels.urlImportPartialSuccess', { added: addedCount, skipped: skippedCount })
+    : window.t('channels.urlImportSuccess', { added: addedCount });
+  window.showNotification(message, 'success');
 }
 
 // 弹出模型选择框，返回选中的模型名，取消返回 null

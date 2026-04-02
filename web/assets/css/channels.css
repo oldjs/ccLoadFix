@@ -1106,6 +1106,39 @@
       font-weight: 600;
     }
 
+    .channel-import-preview-meta {
+      margin-top: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--neutral-700);
+    }
+
+    .channel-import-errors {
+      margin-top: 10px;
+      padding: 10px 12px;
+      color: var(--error-700);
+      background: var(--error-50);
+      border: 1px solid var(--error-500);
+      border-radius: 6px;
+    }
+
+    .channel-import-error-summary {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .channel-import-error-list {
+      max-height: 160px;
+      margin: 8px 0 0;
+      padding-left: 18px;
+      overflow: auto;
+    }
+
+    .channel-import-error-list li {
+      line-height: 1.5;
+      word-break: break-all;
+    }
+
     .channel-export-options {
       display: flex;
       gap: 20px;

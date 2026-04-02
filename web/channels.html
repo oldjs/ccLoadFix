@@ -255,6 +255,15 @@
                   </svg>
                   <span data-i18n="channels.addUrl">添加URL</span>
                 </button>
+                <button type="button" class="btn btn-secondary btn-sm channel-editor-action-btn" data-action="open-url-import-modal"
+                  data-i18n-title="channels.importUrlsTitle" title="批量导入URL">
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M8 3.5V12M8 12L5 9M8 12L11 9" stroke="currentColor" stroke-width="1.5"
+                      stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M2 13.5H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  </svg>
+                  <span data-i18n="channels.importUrls">导入URL</span>
+                </button>
                 <button type="button" id="batchDeleteUrlsBtn" data-action="batch-delete-urls" disabled
                   data-i18n-title="channels.batchDeleteUrlsTitle" title="批量删除选中的URL" class="btn btn-secondary btn-sm"
                   style="opacity: 0.5;">
@@ -640,6 +649,73 @@
   </div>
 
   <!-- Key导入模态框 -->
+  <div id="urlImportModal" class="modal">
+    <div class="modal-content modal-content--md">
+      <div class="modal-header">
+        <h2 class="modal-title" data-i18n="channels.importUrlsTitle">批量导入URL</h2>
+        <button type="button" class="close-btn channel-modal-close-btn channel-hover-modal-close-btn"
+          data-action="close-url-import-modal">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M10.5 3.5L3.5 10.5M3.5 3.5L10.5 10.5" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      </div>
+      <div class="channel-import-modal-body">
+        <div class="form-group">
+          <label class="form-label"><span data-i18n="channels.pasteApiUrls">粘贴 API URLs</span>
+            <span class="channel-import-hint" data-i18n="channels.urlsSeparatorHint">(支持逗号或换行分隔)</span></label>
+          <textarea id="urlImportTextarea" class="form-input channel-import-textarea" rows="10"
+            maxlength="50000" placeholder="https://api.example.com&#10;https://api-backup.example.com/v1"></textarea>
+        </div>
+        <div class="channel-import-info channel-import-info--compact">
+          <div class="channel-import-info-row">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"
+              class="channel-import-info-icon">
+              <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5" />
+              <path d="M8 5V8.5M8 11H8.005" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+            <div>
+              <strong data-i18n="channels.usageInstructions">使用说明：</strong>
+              <ul class="channel-import-info-list">
+                <li><span data-i18n="channels.commaSeparatedUrl">支持逗号分隔：</span><code
+                    class="channel-import-code">https://a.example.com,https://b.example.com</code></li>
+                <li data-i18n="channels.newlineSeparatedUrl">支持换行分隔：每行一个URL</li>
+                <li data-i18n="channels.httpHttpsOnly">仅允许 http/https，自动忽略重复URL</li>
+                <li data-i18n="channels.blockPrivateUrls">禁止 localhost、内网和回环地址</li>
+                <li data-i18n="channels.urlLengthLimitHint">单个URL最长 2048 字符，整段输入最长 50000 字符</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <div id="urlImportPreview" class="channel-import-preview">
+          <div id="urlImportPreviewContent" class="channel-import-preview-content hidden">
+            <div class="channel-import-preview-row">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3 8L6.5 11.5L13 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                  stroke-linejoin="round" />
+              </svg>
+              <span><span data-i18n="channels.parseSuccessUrls">解析成功：将导入</span> <span id="urlImportCount">0</span>
+                <span data-i18n="channels.urlCountSuffix">个URL</span></span>
+            </div>
+            <div id="urlImportPreviewMeta" class="channel-import-preview-meta hidden"></div>
+            <div id="urlImportErrorBox" class="channel-import-errors hidden">
+              <div id="urlImportErrorSummary" class="channel-import-error-summary"></div>
+              <ul id="urlImportErrorList" class="channel-import-error-list"></ul>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" data-action="close-url-import-modal"
+          data-i18n="common.cancel">取消</button>
+        <button type="button" id="confirmUrlImportBtn" class="btn btn-primary" data-action="confirm-url-import"
+          data-i18n="channels.confirmImport">确认导入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Key导入模态框 -->
   <div id="keyImportModal" class="modal">
     <div class="modal-content modal-content--md">
       <div class="modal-header">
@@ -919,6 +995,7 @@
       </td>
       <td class="inline-url-col-url" data-mobile-label="{{mobileLabelUrl}}">
         <input type="text" value="{{url}}" class="inline-url-input modal-inline-input" data-index="{{index}}"
+          maxlength="2048"
           placeholder="https://api.example.com"
           style="width: 100%; padding: 5px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px;">
       </td>
