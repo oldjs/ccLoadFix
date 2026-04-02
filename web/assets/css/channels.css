@@ -73,7 +73,7 @@
 
     .url-summary-cards {
       display: flex;
-      gap: 12px;
+      gap: 8px;
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
       scrollbar-width: thin;
@@ -95,7 +95,7 @@
       background: var(--neutral-50, #f9fafb);
       border: 1px solid var(--neutral-200, #e5e7eb);
       border-radius: 10px;
-      padding: 14px 16px;
+      padding: 10px 12px;
       border-top: 3px solid var(--card-accent, #6b7280);
       transition: box-shadow 0.15s ease, transform 0.15s ease;
     }
@@ -169,7 +169,7 @@
     /* 移动端：卡片横向滚动 */
     @media (max-width: 768px) {
       .url-summary-panel {
-        padding: 12px 14px;
+        padding: 10px 12px;
         margin-bottom: 8px;
       }
 
@@ -1087,7 +1087,7 @@
 
     .health-rate {
       margin-left: 0;
-      font-size: 12px;
+      font-size: 10px;
       font-weight: 500;
       white-space: nowrap;
       font-variant-numeric: tabular-nums;
@@ -2008,7 +2008,8 @@
 
     @media (max-width: 768px) {
       .channel-page-hero {
-        gap: 10px;
+        gap: 8px;
+        padding: 0;
       }
 
       .channel-page-actions {
