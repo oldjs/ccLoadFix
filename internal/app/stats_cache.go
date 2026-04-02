@@ -116,7 +116,10 @@ func (sc *StatsCache) GetStats(ctx context.Context, startTime, endTime time.Time
 	if cached, ok := sc.cache.Load(key); ok {
 		cs := cached.(*cachedStats)
 		if time.Now().Before(cs.expiry) {
-			return cs.data.([]model.StatsEntry), nil
+			data := cs.data.([]model.StatsEntry)
+			result := make([]model.StatsEntry, len(data))
+			copy(result, data)
+			return result, nil
 		}
 	}
 
@@ -126,10 +129,12 @@ func (sc *StatsCache) GetStats(ctx context.Context, startTime, endTime time.Time
 		return nil, err
 	}
 
-	// 写入缓存
+	// 写入缓存时保存一份拷贝，防止被外部修改污染缓存
 	ttl := calculateTTL(endTime)
+	cacheData := make([]model.StatsEntry, len(result))
+	copy(cacheData, result)
 	sc.storeCache(key, &cachedStats{
-		data:   result,
+		data:   cacheData,
 		expiry: time.Now().Add(ttl),
 	})
 
@@ -144,7 +149,10 @@ func (sc *StatsCache) GetStatsLite(ctx context.Context, startTime, endTime time.
 	if cached, ok := sc.cache.Load(key); ok {
 		cs := cached.(*cachedStats)
 		if time.Now().Before(cs.expiry) {
-			return cs.data.([]model.StatsEntry), nil
+			data := cs.data.([]model.StatsEntry)
+			result := make([]model.StatsEntry, len(data))
+			copy(result, data)
+			return result, nil
 		}
 	}
 
@@ -156,8 +164,10 @@ func (sc *StatsCache) GetStatsLite(ctx context.Context, startTime, endTime time.
 
 	// 写入缓存
 	ttl := calculateTTL(endTime)
+	cacheData := make([]model.StatsEntry, len(result))
+	copy(cacheData, result)
 	sc.storeCache(key, &cachedStats{
-		data:   result,
+		data:   cacheData,
 		expiry: time.Now().Add(ttl),
 	})
 
@@ -172,7 +182,9 @@ func (sc *StatsCache) GetRPMStats(ctx context.Context, startTime, endTime time.T
 	if cached, ok := sc.cache.Load(key); ok {
 		cs := cached.(*cachedStats)
 		if time.Now().Before(cs.expiry) {
-			return cs.data.(*model.RPMStats), nil
+			data := cs.data.(*model.RPMStats)
+			result := *data
+			return &result, nil
 		}
 	}
 
@@ -184,8 +196,9 @@ func (sc *StatsCache) GetRPMStats(ctx context.Context, startTime, endTime time.T
 
 	// 写入缓存
 	ttl := calculateTTL(endTime)
+	cacheData := *result
 	sc.storeCache(key, &cachedStats{
-		data:   result,
+		data:   &cacheData,
 		expiry: time.Now().Add(ttl),
 	})
 
@@ -194,9 +207,11 @@ func (sc *StatsCache) GetRPMStats(ctx context.Context, startTime, endTime time.T
 
 // buildCacheKey 生成缓存键
 func buildCacheKey(typ string, startTime, endTime time.Time, filter *model.LogFilter) string {
-	// 使用时间戳（秒）+ filter 哈希作为键
+	// 使用时间戳（秒）按10秒对齐，避免经常变动的 endTime(如 today 时) 导致缓存穿透
+	startBucket := (startTime.Unix() / 10) * 10
+	endBucket := (endTime.Unix() / 10) * 10
 	filterHash := hashFilter(filter)
-	return fmt.Sprintf("%s:%d:%d:%s", typ, startTime.Unix(), endTime.Unix(), filterHash)
+	return fmt.Sprintf("%s:%d:%d:%s", typ, startBucket, endBucket, filterHash)
 }
 
 // hashFilter 对 filter 进行哈希
