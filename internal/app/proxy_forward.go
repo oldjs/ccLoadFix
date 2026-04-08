@@ -398,9 +398,10 @@ func (s *Server) handleResponse(
 		!reqCtx.isStreaming &&
 		shouldCheckSoftErrorForChannelType(channelType) &&
 		(strings.Contains(ct, "text/plain") || strings.Contains(ct, "application/json")) {
-		// 预读 512 字节进行检测
-		peekSize := 512
-		buf := make([]byte, peekSize)
+		// 预读 512 字节进行检测（从池里取，用完还回去）
+		bufPtr := softErrorBufPool.Get().(*[]byte)
+		defer softErrorBufPool.Put(bufPtr)
+		buf := *bufPtr
 		// 使用 Read 读取一次（非阻塞等待填满），避免流式响应强制等待 512 字节导致首字延迟
 		// 之前的 io.ReadFull 会导致 stream 必须积累 2-3 秒数据才返回，这是不可接受的
 		n, err := resp.Body.Read(buf)

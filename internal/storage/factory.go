@@ -179,12 +179,16 @@ func createSQLiteStore(path string) (*sqlstore.SQLStore, error) {
 	}
 
 	// 连接池配置
-	// SQLite 单进程多连接高并发写会触发 BUSY/DEADLOCK，导致冷却等事务更新不可靠。
-	// 强制单连接，由 database/sql 串行化所有事务（单写者模式）。
-	// 读性能：热读已被缓存层吸收（Channel/APIKey/Cooldown），影响有限。
-	// 扩展路径：真有性能问题应切换 MySQL，而非在 SQLite 上堆锁。
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	// :memory: 数据库每个连接独立，必须保持单连接；否则各连接看到的是不同的空库。
+	// 文件数据库：WAL 模式允许读写并发（一个写者 + 多个读者），放开到 5 连接提升并发读能力。
+	// 写冲突由 busy_timeout(5000ms) + 应用层事务重试（transaction.go）兜底。
+	if path == ":memory:" {
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+	} else {
+		db.SetMaxOpenConns(config.SQLiteMaxOpenConnsFile)
+		db.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile)
+	}
 	db.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
 
 	// 创建统一的 SQLStore

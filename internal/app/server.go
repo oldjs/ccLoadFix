@@ -317,16 +317,17 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 	}
 
 	transport := &http.Transport{
-		Proxy:               http.ProxyFromEnvironment, // 支持 HTTPS_PROXY/HTTP_PROXY/NO_PROXY
-		MaxIdleConns:        config.HTTPMaxIdleConns,
-		MaxIdleConnsPerHost: config.HTTPMaxIdleConnsPerHost,
-		IdleConnTimeout:     90 * time.Second, // 空闲连接90秒后关闭，避免僵尸连接
-		MaxConnsPerHost:     config.HTTPMaxConnsPerHost,
-		DialContext:         dialer.DialContext,
-		TLSHandshakeTimeout: config.HTTPTLSHandshakeTimeout,
-		DisableCompression:  false,
-		DisableKeepAlives:   false,
-		ForceAttemptHTTP2:   true, // 启用标准库 HTTP/2（HTTPS 自动协商）
+		Proxy:                 http.ProxyFromEnvironment, // 支持 HTTPS_PROXY/HTTP_PROXY/NO_PROXY
+		MaxIdleConns:          config.HTTPMaxIdleConns,
+		MaxIdleConnsPerHost:   config.HTTPMaxIdleConnsPerHost,
+		IdleConnTimeout:       90 * time.Second, // 空闲连接90秒后关闭，避免僵尸连接
+		MaxConnsPerHost:       config.HTTPMaxConnsPerHost,
+		DialContext:           dialer.DialContext,
+		TLSHandshakeTimeout:  config.HTTPTLSHandshakeTimeout,
+		ResponseHeaderTimeout: config.HTTPResponseHeaderTimeout, // 发出请求后30秒内必须收到响应头，否则判死
+		DisableCompression:    false,
+		DisableKeepAlives:     false,
+		ForceAttemptHTTP2:     true, // 启用标准库 HTTP/2（HTTPS 自动协商）
 		TLSClientConfig: &tls.Config{
 			ClientSessionCache: tls.NewLRUClientSessionCache(config.TLSSessionCacheSize),
 			MinVersion:         tls.VersionTLS12,

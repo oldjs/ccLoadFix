@@ -64,14 +64,23 @@ type urlRequestCount struct {
 }
 
 // URLSelector 基于EWMA延迟、成功率和模型亲和性选择最优URL
+//
+// 锁分离策略：
+//   - mu: 核心数据（latencies/cooldowns/requests/probing），请求频繁读写
+//   - affinityMu: 亲和性和黑名单（affinities/noThinkingBlklist），写入频率低
+//   - 好处：RecordLatency/CooldownURL 写锁不会阻塞亲和性读取，反之亦然
+//   - 锁顺序：需要同时持有两把锁时，始终先 mu 后 affinityMu（防死锁）
 type URLSelector struct {
-	mu           sync.RWMutex
-	latencies    map[urlKey]*ewmaValue
-	cooldowns    map[urlKey]urlCooldownState
-	requests     map[urlKey]*urlRequestCount
+	mu         sync.RWMutex // 核心数据锁
+	latencies  map[urlKey]*ewmaValue
+	cooldowns  map[urlKey]urlCooldownState
+	requests   map[urlKey]*urlRequestCount
+	probing    map[urlKey]time.Time
+
+	affinityMu        sync.RWMutex                       // 亲和性/黑名单锁
 	affinities        map[modelAffinityKey]*affinityEntry // 模型亲和性：上次成功的URL
-	noThinkingBlklist map[urlModelKey]time.Time          // thinking黑名单：(URL,模型)→过期时间
-	probing           map[urlKey]time.Time
+	noThinkingBlklist map[urlModelKey]time.Time           // thinking黑名单：(URL,模型)→过期时间
+
 	alpha        float64       // EWMA权重因子
 	cooldownBase time.Duration // 基础冷却时间
 	cooldownMax  time.Duration // 最大冷却时间
@@ -122,6 +131,7 @@ func NewURLSelector() *URLSelector {
 }
 
 func (s *URLSelector) gcLocked(now time.Time, maxAge time.Duration) {
+	// === 核心数据清理（调用方已持有 mu.Lock）===
 	if maxAge <= 0 {
 		maxAge = s.latencyMaxAge
 	}
@@ -150,20 +160,20 @@ func (s *URLSelector) gcLocked(now time.Time, maxAge time.Duration) {
 		}
 	}
 
-	// 清理过期的模型亲和性（超过24小时没用的就扔了）
+	// === 亲和性/黑名单清理（需要 affinityMu，锁顺序：mu → affinityMu）===
+	s.affinityMu.Lock()
 	affinityCutoff := now.Add(-24 * time.Hour)
 	for key, aff := range s.affinities {
 		if aff.lastUsed.Before(affinityCutoff) {
 			delete(s.affinities, key)
 		}
 	}
-
-	// 清理过期的 thinking 黑名单
 	for key, expiry := range s.noThinkingBlklist {
 		if now.After(expiry) {
 			delete(s.noThinkingBlklist, key)
 		}
 	}
+	s.affinityMu.Unlock()
 }
 
 func (s *URLSelector) maybeCleanupLocked(now time.Time) {
@@ -226,12 +236,17 @@ func (s *URLSelector) PruneChannel(channelID int64, keepURLs []string) {
 func (s *URLSelector) RemoveChannel(channelID int64) {
 	s.PruneChannel(channelID, nil)
 
-	// 清理该渠道的所有亲和性
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// 清理该渠道的亲和性和黑名单
+	s.affinityMu.Lock()
+	defer s.affinityMu.Unlock()
 	for key := range s.affinities {
 		if key.channelID == channelID {
 			delete(s.affinities, key)
+		}
+	}
+	for key := range s.noThinkingBlklist {
+		if key.channelID == channelID {
+			delete(s.noThinkingBlklist, key)
 		}
 	}
 }
@@ -263,8 +278,13 @@ func (s *URLSelector) SelectURLForModel(channelID int64, model string, urls []st
 	}
 
 	now := time.Now()
+
+	// 两把读锁同时持有：互不阻塞读操作，但各自与对应的写锁独立竞争
+	// 好处：RecordLatency(mu写)不阻塞 SetModelAffinity(affinityMu写)，反之亦然
 	s.mu.RLock()
+	s.affinityMu.RLock()
 	defer s.mu.RUnlock()
+	defer s.affinityMu.RUnlock()
 
 	type candidate struct {
 		url         string
@@ -467,8 +487,8 @@ func (s *URLSelector) SetModelAffinity(channelID int64, model, rawURL string) {
 	}
 	ak := modelAffinityKey{channelID: channelID, model: model}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.affinityMu.Lock()
+	defer s.affinityMu.Unlock()
 
 	s.affinities[ak] = &affinityEntry{
 		url:      rawURL,
@@ -484,8 +504,8 @@ func (s *URLSelector) ClearModelAffinity(channelID int64, model, failedURL strin
 	}
 	ak := modelAffinityKey{channelID: channelID, model: model}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.affinityMu.Lock()
+	defer s.affinityMu.Unlock()
 
 	if aff, ok := s.affinities[ak]; ok && aff.url == failedURL {
 		delete(s.affinities, ak)
@@ -499,8 +519,8 @@ func (s *URLSelector) GetModelAffinity(channelID int64, model string) (string, b
 	}
 	ak := modelAffinityKey{channelID: channelID, model: model}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.affinityMu.RLock()
+	defer s.affinityMu.RUnlock()
 
 	aff, ok := s.affinities[ak]
 	if !ok {
@@ -514,8 +534,8 @@ func (s *URLSelector) GetModelAffinity(channelID int64, model string) (string, b
 func (s *URLSelector) MarkNoThinking(channelID int64, rawURL, model string) {
 	key := urlModelKey{channelID: channelID, url: rawURL, model: model}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.affinityMu.Lock()
+	defer s.affinityMu.Unlock()
 
 	s.noThinkingBlklist[key] = time.Now().Add(7 * 24 * time.Hour)
 
@@ -530,8 +550,8 @@ func (s *URLSelector) MarkNoThinking(channelID int64, rawURL, model string) {
 func (s *URLSelector) IsNoThinking(channelID int64, rawURL, model string) bool {
 	key := urlModelKey{channelID: channelID, url: rawURL, model: model}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.affinityMu.RLock()
+	defer s.affinityMu.RUnlock()
 
 	expiry, ok := s.noThinkingBlklist[key]
 	return ok && time.Now().Before(expiry)
@@ -546,8 +566,8 @@ type NoThinkingEntry struct {
 
 // GetNoThinkingList 获取指定渠道的 thinking 黑名单列表
 func (s *URLSelector) GetNoThinkingList(channelID int64) []NoThinkingEntry {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.affinityMu.RLock()
+	defer s.affinityMu.RUnlock()
 
 	now := time.Now()
 	var list []NoThinkingEntry
@@ -565,8 +585,8 @@ func (s *URLSelector) GetNoThinkingList(channelID int64) []NoThinkingEntry {
 
 // ClearNoThinking 清除指定渠道的 thinking 黑名单（全部或指定 URL+model）
 func (s *URLSelector) ClearNoThinking(channelID int64, rawURL, model string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.affinityMu.Lock()
+	defer s.affinityMu.Unlock()
 
 	cleared := 0
 	for key := range s.noThinkingBlklist {
