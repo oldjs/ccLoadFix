@@ -42,7 +42,8 @@
       'Authorization': `Bearer ${token}`,
     };
 
-    const response = await fetch(url, { ...options, headers });
+    // no-store 避免浏览器对 API 响应做磁盘缓存
+    const response = await fetch(url, { cache: 'no-store', ...options, headers });
 
     // 处理401未授权（静默跳转，不显示错误提示）
     if (response.status === 401) {
@@ -84,7 +85,7 @@
   }
 
   async function fetchAPI(url, options = {}) {
-    const res = await fetch(url, options);
+    const res = await fetch(url, { cache: 'no-store', ...options });
     return parseAPIResponse(res);
   }
 

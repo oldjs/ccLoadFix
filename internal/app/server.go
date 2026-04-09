@@ -481,7 +481,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 	r.GET("/health", s.HandleHealth)
 
 	// 首页仪表盘数据（需登录）
-	public := r.Group("/public", ZstdMiddleware(), s.authService.RequireTokenAuth())
+	public := r.Group("/public", noCacheAPI(), ZstdMiddleware(), s.authService.RequireTokenAuth())
 	{
 		public.GET("/summary", s.HandlePublicSummary)
 		public.GET("/channel-types", s.HandleGetChannelTypes)
@@ -496,7 +496,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 	r.POST("/logout", s.authService.HandleLogout)
 
 	// 需要身份验证的admin APIs（使用Token认证）
-	admin := r.Group("/admin", ZstdMiddleware())
+	admin := r.Group("/admin", noCacheAPI(), ZstdMiddleware())
 	admin.Use(s.authService.RequireTokenAuth())
 	{
 		// 渠道管理

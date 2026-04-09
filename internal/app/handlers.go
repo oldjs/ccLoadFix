@@ -10,6 +10,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// noCacheAPI 给 API 响应加 Cache-Control: no-store，防浏览器缓存 JSON
+func noCacheAPI() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Next()
+	}
+}
+
 // PaginationParams 通用分页参数结构
 type PaginationParams struct {
 	Range  string // 时间范围: today/yesterday/this_week等
