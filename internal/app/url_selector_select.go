@@ -50,11 +50,11 @@ func normalizeSelectorLatencyMS(ms float64) float64 {
 func penalizeSlowTTFBMS(ms float64) float64 {
 	ms = normalizeSelectorLatencyMS(ms)
 	switch {
-	case ms > 4000:
+	case ms >= 4000:
 		return ms * 5
-	case ms > 2500:
+	case ms >= 2500:
 		return ms * 3
-	case ms > 1200:
+	case ms >= 1200:
 		return ms * 2
 	default:
 		return ms

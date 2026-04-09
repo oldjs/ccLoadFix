@@ -1,0 +1,325 @@
+package app
+
+import (
+	"fmt"
+	"math"
+	"sync"
+	"testing"
+	"time"
+)
+
+func runURLSelections(rounds int, pick func() string) map[string]int {
+	counts := make(map[string]int)
+	for range rounds {
+		counts[pick()]++
+	}
+	return counts
+}
+
+func selectionRatio(count int, rounds int) float64 {
+	if rounds == 0 {
+		return 0
+	}
+	return float64(count) / float64(rounds)
+}
+
+func formatSelectionStats(urls []string, counts map[string]int, rounds int) []string {
+	stats := make([]string, 0, len(urls))
+	for _, rawURL := range urls {
+		count := counts[rawURL]
+		stats = append(stats, fmt.Sprintf("%s=%d (%.1f%%)", rawURL, count, selectionRatio(count, rounds)*100))
+	}
+	return stats
+}
+
+func TestPenalizeSlowTTFBMS_Boundaries(t *testing.T) {
+	tests := []struct {
+		name string
+		in   float64
+		want float64
+	}{
+		{name: "zero", in: 0, want: defaultEffectiveLatencyMS},
+		{name: "negative", in: -10, want: defaultEffectiveLatencyMS},
+		{name: "nan", in: math.NaN(), want: defaultEffectiveLatencyMS},
+		{name: "exact 100", in: 100, want: 100},
+		{name: "below 100", in: 99, want: defaultEffectiveLatencyMS},
+		{name: "exact 1200", in: 1200, want: 2400},
+		{name: "exact 2500", in: 2500, want: 7500},
+		{name: "exact 4000", in: 4000, want: 20000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := penalizeSlowTTFBMS(tt.in)
+			if math.Abs(got-tt.want) > 0.001 {
+				t.Fatalf("penalizeSlowTTFBMS(%v)=%v want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestURLSelector_QuantifiedSlowPenalty1000(t *testing.T) {
+	sel := NewURLSelector()
+	urls := []string{"https://fast.example", "https://slow.example"}
+	sel.RecordLatency(1, urls[0], 500*time.Millisecond)
+	sel.RecordLatency(1, urls[1], 2500*time.Millisecond)
+
+	const rounds = 1000
+	counts := runURLSelections(rounds, func() string {
+		picked, _ := sel.SelectURL(1, urls)
+		return picked
+	})
+	t.Logf("quantified penalty: %v", formatSelectionStats(urls, counts, rounds))
+
+	fastRatio := selectionRatio(counts[urls[0]], rounds)
+	slowRatio := selectionRatio(counts[urls[1]], rounds)
+	if fastRatio < 0.88 {
+		t.Fatalf("expected fast URL to dominate after 2500ms penalty, fastRatio=%.3f slowRatio=%.3f", fastRatio, slowRatio)
+	}
+	if slowRatio > 0.12 {
+		t.Fatalf("expected slow URL to be heavily suppressed, fastRatio=%.3f slowRatio=%.3f", fastRatio, slowRatio)
+	}
+}
+
+func TestURLSelector_ProbeSeedDropsAfterRealSlowTTFB(t *testing.T) {
+	sel := NewURLSelector()
+	urls := []string{"https://probe-fast-but-slow.example", "https://steady.example"}
+
+	sel.RecordProbeLatency(1, urls[0], 50*time.Millisecond)
+	sel.RecordProbeLatency(1, urls[1], 80*time.Millisecond)
+
+	const rounds = 600
+	before := runURLSelections(rounds, func() string {
+		picked, _ := sel.SelectURL(1, urls)
+		return picked
+	})
+	t.Logf("before real TTFB: %v", formatSelectionStats(urls, before, rounds))
+
+	sel.RecordLatency(1, urls[0], 4000*time.Millisecond)
+	sel.RecordLatency(1, urls[1], 500*time.Millisecond)
+
+	after := runURLSelections(rounds, func() string {
+		picked, _ := sel.SelectURL(1, urls)
+		return picked
+	})
+	t.Logf("after real TTFB: %v", formatSelectionStats(urls, after, rounds))
+
+	if selectionRatio(after[urls[0]], rounds) > 0.08 {
+		t.Fatalf("expected real slow TTFB to quickly suppress probe-fast URL, after=%v", after)
+	}
+	if selectionRatio(after[urls[1]], rounds) < 0.92 {
+		t.Fatalf("expected steady URL to dominate after real TTFB arrives, after=%v", after)
+	}
+}
+
+func TestURLSelector_AffinityEscapesSlowURL_Quantified(t *testing.T) {
+	sel := NewURLSelector()
+	model := "gpt-4.1"
+	urls := []string{"https://affinity-slow.example", "https://better.example", "https://fallback.example"}
+
+	sel.RecordLatency(1, urls[0], 4000*time.Millisecond)
+	sel.RecordLatency(1, urls[1], 300*time.Millisecond)
+	sel.RecordLatency(1, urls[2], 700*time.Millisecond)
+	sel.SetModelAffinity(1, model, urls[0])
+
+	const rounds = 500
+	counts := runURLSelections(rounds, func() string {
+		picked, _ := sel.SelectURLForModel(1, model, urls)
+		return picked
+	})
+	t.Logf("affinity escape: %v", formatSelectionStats(urls, counts, rounds))
+
+	if selectionRatio(counts[urls[0]], rounds) > 0.06 {
+		t.Fatalf("expected affinity to escape the slow URL, counts=%v", counts)
+	}
+	if counts[urls[1]] <= counts[urls[2]] {
+		t.Fatalf("expected better URL to stay ahead after affinity escape, counts=%v", counts)
+	}
+}
+
+func TestURLSelector_ColdStart_NoHistoryStillSelectsAll(t *testing.T) {
+	sel := NewURLSelector()
+	urls := []string{
+		"https://cold-a.example",
+		"https://cold-b.example",
+		"https://cold-c.example",
+		"https://cold-d.example",
+	}
+
+	const rounds = 400
+	counts := runURLSelections(rounds, func() string {
+		picked, _ := sel.SelectURL(1, urls)
+		return picked
+	})
+	t.Logf("cold start: %v", formatSelectionStats(urls, counts, rounds))
+
+	for _, rawURL := range urls {
+		if counts[rawURL] == 0 {
+			t.Fatalf("expected cold-start exploration to include %s, counts=%v", rawURL, counts)
+		}
+	}
+}
+
+func TestURLSelector_AllVerySlowStillPreferLeastSlow(t *testing.T) {
+	sel := NewURLSelector()
+	urls := []string{"https://4500.example", "https://5000.example", "https://8000.example"}
+	sel.RecordLatency(1, urls[0], 4500*time.Millisecond)
+	sel.RecordLatency(1, urls[1], 5000*time.Millisecond)
+	sel.RecordLatency(1, urls[2], 8000*time.Millisecond)
+
+	const rounds = 1000
+	counts := runURLSelections(rounds, func() string {
+		picked, _ := sel.SelectURL(1, urls)
+		return picked
+	})
+	t.Logf("all slow: %v", formatSelectionStats(urls, counts, rounds))
+
+	if !(counts[urls[0]] > counts[urls[1]] && counts[urls[1]] > counts[urls[2]]) {
+		t.Fatalf("expected least-slow URL to stay ahead even when all are slow, counts=%v", counts)
+	}
+}
+
+func TestURLSelector_OnlyOneCandidateAndZeroLatencyStayUsable(t *testing.T) {
+	sel := NewURLSelector()
+	url := "https://only.example"
+	sel.RecordLatency(1, url, 0)
+	sel.CooldownURL(1, url)
+
+	picked, idx := sel.SelectURL(1, []string{url})
+	if picked != url || idx != 0 {
+		t.Fatalf("expected the only candidate to be returned, got (%s,%d)", picked, idx)
+	}
+
+	stats := sel.GetURLStats(1, []string{url})
+	if len(stats) != 1 {
+		t.Fatalf("expected one stat entry, got %d", len(stats))
+	}
+	if stats[0].LatencyMs <= 0 || math.IsNaN(stats[0].LatencyMs) || math.IsInf(stats[0].LatencyMs, 0) {
+		t.Fatalf("expected normalized effective latency for zero TTFB, got %+v", stats[0])
+	}
+}
+
+func TestURLSelector_ConcurrentAccessIsStable(t *testing.T) {
+	sel := NewURLSelector()
+	urls := []string{"https://a.example", "https://b.example", "https://c.example"}
+	model := "gpt-4o"
+
+	var wg sync.WaitGroup
+	for worker := 0; worker < 12; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for step := 0; step < 300; step++ {
+				rawURL := urls[(worker+step)%len(urls)]
+				switch step % 7 {
+				case 0:
+					sel.RecordLatency(1, rawURL, time.Duration(100+worker*20+step%50)*time.Millisecond)
+				case 1:
+					sel.RecordProbeLatency(1, rawURL, time.Duration(50+worker*10+step%20)*time.Millisecond)
+				case 2:
+					sel.CooldownURL(1, rawURL)
+				case 3:
+					sel.MarkURLSuccess(1, rawURL)
+				case 4:
+					sel.SetModelAffinity(1, model, rawURL)
+				case 5:
+					sel.ClearModelAffinity(1, model, rawURL)
+				default:
+					picked, _ := sel.SelectURLForModel(1, model, urls)
+					if picked == "" {
+						t.Errorf("worker %d step %d: expected non-empty selection", worker, step)
+					}
+					if len(sel.SortURLs(1, urls)) != len(urls) {
+						t.Errorf("worker %d step %d: expected stable sorting output", worker, step)
+					}
+				}
+			}
+		}(worker)
+	}
+	wg.Wait()
+
+	picked, _ := sel.SelectURLForModel(1, model, urls)
+	if picked == "" {
+		t.Fatalf("expected selector to remain usable after concurrent access")
+	}
+}
+
+func TestURLSelector_SortAndSelectStayConsistent(t *testing.T) {
+	sel := NewURLSelector()
+	urls := []string{"https://best.example", "https://mid.example", "https://worst.example"}
+	sel.RecordLatency(1, urls[0], 100*time.Millisecond)
+	sel.RecordLatency(1, urls[1], 600*time.Millisecond)
+	sel.RecordLatency(1, urls[2], 4000*time.Millisecond)
+
+	sorted := sel.SortURLs(1, urls)
+	if len(sorted) != len(urls) {
+		t.Fatalf("expected %d sorted urls, got %d", len(urls), len(sorted))
+	}
+	if sorted[0].url != urls[0] {
+		t.Fatalf("expected best URL to sort first, got %s", sorted[0].url)
+	}
+
+	const rounds = 1000
+	counts := runURLSelections(rounds, func() string {
+		picked, _ := sel.SelectURLForModel(1, "", urls)
+		return picked
+	})
+	t.Logf("sort vs select: %v", formatSelectionStats(urls, counts, rounds))
+
+	if !(counts[urls[0]] > counts[urls[1]] && counts[urls[1]] > counts[urls[2]]) {
+		t.Fatalf("expected select preference to match sort order, counts=%v sorted=%v", counts, sorted)
+	}
+}
+
+func TestURLSelector_EndToEndPenaltyProfile(t *testing.T) {
+	sel := NewURLSelector()
+	model := "gpt-5.4"
+	urls := []string{
+		"https://100ms.example",
+		"https://500ms.example",
+		"https://1200ms.example",
+		"https://2500ms.example",
+		"https://4000ms.example",
+	}
+	latencies := []time.Duration{
+		100 * time.Millisecond,
+		500 * time.Millisecond,
+		1200 * time.Millisecond,
+		2500 * time.Millisecond,
+		4000 * time.Millisecond,
+	}
+	for i, rawURL := range urls {
+		sel.RecordLatency(1, rawURL, latencies[i])
+	}
+
+	const rounds = 1000
+	counts := runURLSelections(rounds, func() string {
+		picked, _ := sel.SelectURL(1, urls)
+		return picked
+	})
+	t.Logf("5-url penalty profile: %v", formatSelectionStats(urls, counts, rounds))
+
+	if !(counts[urls[0]] > counts[urls[1]] && counts[urls[1]] > counts[urls[2]]) {
+		t.Fatalf("expected top three URLs to keep clear ordering after penalties, counts=%v", counts)
+	}
+	if selectionRatio(counts[urls[3]], rounds) > 0.05 {
+		t.Fatalf("expected 2500ms URL to stay rare, counts=%v", counts)
+	}
+	if selectionRatio(counts[urls[4]], rounds) > 0.03 {
+		t.Fatalf("expected 4000ms URL to be extremely rare, counts=%v", counts)
+	}
+
+	sel.SetModelAffinity(1, model, urls[4])
+	affinityCounts := runURLSelections(rounds, func() string {
+		picked, _ := sel.SelectURLForModel(1, model, urls)
+		return picked
+	})
+	t.Logf("affinity on slow URL: %v", formatSelectionStats(urls, affinityCounts, rounds))
+
+	if selectionRatio(affinityCounts[urls[4]], rounds) > 0.04 {
+		t.Fatalf("expected affinity to escape the 4000ms URL, counts=%v", affinityCounts)
+	}
+	if affinityCounts[urls[0]] <= affinityCounts[urls[1]] {
+		t.Fatalf("expected fastest URL to remain the primary pick after escape, counts=%v", affinityCounts)
+	}
+}
