@@ -1048,33 +1048,29 @@ window.initPageBootstrap({
   }
 });
 
-// 处理 bfcache（后退/前进缓存）：页面从缓存恢复时重新加载筛选条件
-window.addEventListener('pageshow', async function (event) {
-  if (event.persisted) {
-    // 页面从 bfcache 恢复，重新同步筛选器状态
-    const savedFilters = window.FilterState.load(LOGS_FILTER_KEY);
-    if (savedFilters) {
-      let restoredFilters = window.FilterState.restore({
-        search: '',
-        savedFilters,
-        fields: LOGS_FILTER_FIELDS
-      });
-      restoredFilters = await window.FilterState.validateAsync(restoredFilters, LOGS_FILTER_FIELDS);
+// bfcache 恢复：统一由 initPageBootstrap 触发 ccload:bfcache-restore 事件
+window.addEventListener('ccload:bfcache-restore', async function () {
+  const savedFilters = window.FilterState.load(LOGS_FILTER_KEY);
+  if (!savedFilters) return;
 
-      // 重新加载令牌列表并设置值
-      authTokens = await window.loadAuthTokensIntoSelect('f_auth_token');
-      if (restoredFilters.authToken) {
-        document.getElementById('f_auth_token').value = restoredFilters.authToken;
-      }
+  let restoredFilters = window.FilterState.restore({
+    search: '',
+    savedFilters,
+    fields: LOGS_FILTER_FIELDS
+  });
+  restoredFilters = await window.FilterState.validateAsync(restoredFilters, LOGS_FILTER_FIELDS);
 
-      document.getElementById('f_hours').value = restoredFilters.range || 'today';
-      applyLogsFilterValues(restoredFilters);
-
-      // 重新加载数据
-      currentLogsPage = 1;
-      load();
-    }
+  // 重新加载令牌列表并设置值
+  authTokens = await window.loadAuthTokensIntoSelect('f_auth_token');
+  if (restoredFilters.authToken) {
+    document.getElementById('f_auth_token').value = restoredFilters.authToken;
   }
+
+  document.getElementById('f_hours').value = restoredFilters.range || 'today';
+  applyLogsFilterValues(restoredFilters);
+
+  currentLogsPage = 1;
+  load();
 });
 
 // ========== API Key 测试功能 ==========

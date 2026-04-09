@@ -642,6 +642,15 @@
       await run();
     };
 
+    // 统一注册 bfcache 恢复事件，各页面 JS 监听 ccload:bfcache-restore 即可
+    if (typeof window.addEventListener === 'function') {
+      window.addEventListener('pageshow', function(event) {
+        if (event.persisted) {
+          window.dispatchEvent(new CustomEvent('ccload:bfcache-restore'));
+        }
+      });
+    }
+
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', () => {
         void execute();
