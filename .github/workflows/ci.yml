@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [master]
 
+# 同 branch/PR 只跑最新一次，旧的自动取消
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: Lint
@@ -36,8 +41,18 @@ jobs:
         with:
           go-version: '1.25'
 
-      - name: Run tests
-        run: go test -tags go_json -count=1 -v ./...
+      - name: Run tests with race detection and coverage
+        run: |
+          go test -tags go_json -race -count=1 -coverprofile=coverage.out -v ./...
+          go tool cover -func=coverage.out | tail -1
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+          retention-days: 7
 
   build:
     name: Build
@@ -51,5 +66,41 @@ jobs:
         with:
           go-version: '1.25'
 
-      - name: Build
-        run: go build -tags go_json ./...
+      - name: Build (with version injection)
+        run: |
+          go build -tags go_json -ldflags "\
+            -X ccLoad/internal/version.Version=$(git describe --tags --always 2>/dev/null || echo dev) \
+            -X ccLoad/internal/version.Commit=$(git rev-parse --short HEAD) \
+            -X 'ccLoad/internal/version.BuildTime=$(date '+%Y-%m-%d %H:%M:%S %z')' \
+            -X ccLoad/internal/version.BuiltBy=ci" -o ccload .
+
+  web-test:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run frontend tests
+        run: node --test web/assets/js/*.test.js
+
+  security:
+    name: Security Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for .env file leaks
+        run: |
+          if git ls-files --cached | grep -qE '(^|/)\.env($|\.)'; then
+            echo "ERROR: .env file detected in repository!"
+            git ls-files --cached | grep -E '(^|/)\.env($|\.)'
+            exit 1
+          fi
+          echo "No .env files found in tracked files."
