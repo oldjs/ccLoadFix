@@ -295,7 +295,7 @@ func (s *Server) fetchModelsWithURLFallback(
 	if selectorEnabled {
 		selector = s.urlSelector
 	}
-	sortedURLs := orderURLsWithSelector(selector, channelID, urls, "")
+	sortedURLs := orderDiagnosticURLsWithSelector(selector, channelID, urls, "")
 
 	var lastErr error
 	for _, entry := range sortedURLs {

@@ -1,10 +1,7 @@
 package app
 
-// orderURLsWithSelector 返回用于故障切换的URL尝试顺序。
-// 当 selector 可用且存在多个URL时：
-// 1. 优先使用模型亲和性URL（上次成功的URL）
-// 2. 其次用成功率+延迟加权随机选首跳
-// 3. 其余URL按综合得分排序兜底
+// orderURLsWithSelector 返回用于故障切换的 URL 尝试顺序。
+// 这里一次性产出首跳和 fallback 计划，避免先选首跳再重排导致前后不一致。
 func orderURLsWithSelector(selector *URLSelector, channelID int64, urls []string, model string) []sortedURL {
 	if len(urls) == 0 {
 		return nil
@@ -19,29 +16,27 @@ func orderURLsWithSelector(selector *URLSelector, channelID int64, urls []string
 		}
 		return ordered
 	}
+	return selector.planURLsForModel(channelID, model, urls)
+}
 
-	sortedURLs := selector.SortURLs(channelID, urls)
-	if len(sortedURLs) <= 1 {
-		return sortedURLs
+// orderDiagnosticURLsWithSelector 返回给后台测试/诊断用的 URL 顺序。
+// 先沿用统一 planner 的优先级，再把被 canary 隐藏掉的 URL 追加回来，保证人工诊断时能把所有 URL 试完。
+func orderDiagnosticURLsWithSelector(selector *URLSelector, channelID int64, urls []string, model string) []sortedURL {
+	planned := orderURLsWithSelector(selector, channelID, urls, model)
+	if len(planned) >= len(urls) {
+		return planned
 	}
 
-	// 用带模型亲和性的选择（亲和URL会被优先返回）
-	preferredURL, _ := selector.SelectURLForModel(channelID, model, urls)
-	for i, entry := range sortedURLs {
-		if entry.url != preferredURL {
+	seen := make(map[string]struct{}, len(planned))
+	expanded := append([]sortedURL(nil), planned...)
+	for _, entry := range planned {
+		seen[entry.url] = struct{}{}
+	}
+	for i, rawURL := range urls {
+		if _, ok := seen[rawURL]; ok {
 			continue
 		}
-		if i == 0 {
-			return sortedURLs
-		}
-
-		// 把首选URL提到最前面
-		reordered := make([]sortedURL, 0, len(sortedURLs))
-		reordered = append(reordered, entry)
-		reordered = append(reordered, sortedURLs[:i]...)
-		reordered = append(reordered, sortedURLs[i+1:]...)
-		return reordered
+		expanded = append(expanded, sortedURL{url: rawURL, idx: i})
 	}
-
-	return sortedURLs
+	return expanded
 }

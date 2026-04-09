@@ -137,6 +137,36 @@ func TestURLSelector_AffinityEscapesSlowURL_Quantified(t *testing.T) {
 	}
 }
 
+func TestURLSelector_SoftAffinityIsBiasNotShortCircuit(t *testing.T) {
+	sel := NewURLSelector()
+	model := "gpt-4.1"
+	urls := []string{"https://best.example", "https://affinity.example", "https://fallback.example"}
+
+	sel.RecordLatency(1, urls[0], 400*time.Millisecond)
+	sel.RecordLatency(1, urls[1], 900*time.Millisecond)
+	sel.RecordLatency(1, urls[2], 1200*time.Millisecond)
+
+	baseline := runURLSelections(600, func() string {
+		picked, _ := sel.SelectURLForModel(1, model, urls)
+		return picked
+	})
+	sel.SetModelAffinity(1, model, urls[1])
+	afterAffinity := runURLSelections(600, func() string {
+		picked, _ := sel.SelectURLForModel(1, model, urls)
+		return picked
+	})
+
+	t.Logf("soft affinity baseline: %v", formatSelectionStats(urls, baseline, 600))
+	t.Logf("soft affinity after: %v", formatSelectionStats(urls, afterAffinity, 600))
+
+	if afterAffinity[urls[1]] <= baseline[urls[1]] {
+		t.Fatalf("expected affinity URL to gain probability after soft bias, baseline=%v after=%v", baseline, afterAffinity)
+	}
+	if afterAffinity[urls[0]] == 0 {
+		t.Fatalf("expected best real URL to remain selectable after affinity bias, after=%v", afterAffinity)
+	}
+}
+
 func TestURLSelector_ColdStart_NoHistoryStillSelectsAll(t *testing.T) {
 	sel := NewURLSelector()
 	urls := []string{
@@ -229,8 +259,16 @@ func TestURLSelector_ConcurrentAccessIsStable(t *testing.T) {
 					if picked == "" {
 						t.Errorf("worker %d step %d: expected non-empty selection", worker, step)
 					}
-					if len(sel.SortURLs(1, urls)) != len(urls) {
-						t.Errorf("worker %d step %d: expected stable sorting output", worker, step)
+					ordered := sel.SortURLs(1, urls)
+					if len(ordered) == 0 || len(ordered) > len(urls) {
+						t.Errorf("worker %d step %d: expected bounded sorting output, got %d", worker, step, len(ordered))
+					}
+					seen := make(map[string]struct{}, len(ordered))
+					for _, entry := range ordered {
+						if _, ok := seen[entry.url]; ok {
+							t.Errorf("worker %d step %d: expected no duplicate URLs in plan %v", worker, step, ordered)
+						}
+						seen[entry.url] = struct{}{}
 					}
 				}
 			}
@@ -249,14 +287,21 @@ func TestURLSelector_SortAndSelectStayConsistent(t *testing.T) {
 	urls := []string{"https://best.example", "https://mid.example", "https://worst.example"}
 	sel.RecordLatency(1, urls[0], 100*time.Millisecond)
 	sel.RecordLatency(1, urls[1], 600*time.Millisecond)
-	sel.RecordLatency(1, urls[2], 4000*time.Millisecond)
+	sel.RecordLatency(1, urls[2], 2500*time.Millisecond)
 
 	sorted := sel.SortURLs(1, urls)
 	if len(sorted) != len(urls) {
 		t.Fatalf("expected %d sorted urls, got %d", len(urls), len(sorted))
 	}
-	if sorted[0].url != urls[0] {
-		t.Fatalf("expected best URL to sort first, got %s", sorted[0].url)
+	seen := make(map[string]struct{}, len(sorted))
+	for _, entry := range sorted {
+		seen[entry.url] = struct{}{}
+	}
+	if len(seen) != len(urls) {
+		t.Fatalf("expected sort plan without duplicates, got %v", sorted)
+	}
+	if _, ok := seen[urls[0]]; !ok {
+		t.Fatalf("expected fastest URL to remain in sort plan, got %v", sorted)
 	}
 
 	const rounds = 1000
@@ -268,6 +313,61 @@ func TestURLSelector_SortAndSelectStayConsistent(t *testing.T) {
 
 	if !(counts[urls[0]] > counts[urls[1]] && counts[urls[1]] > counts[urls[2]]) {
 		t.Fatalf("expected select preference to match sort order, counts=%v sorted=%v", counts, sorted)
+	}
+}
+
+func TestURLSelector_ProbeOnlyNeverBeatsRealPrimary(t *testing.T) {
+	sel := NewURLSelector()
+	urls := []string{"https://real.example", "https://probe.example", "https://unknown.example"}
+
+	sel.RecordLatency(1, urls[0], 700*time.Millisecond)
+	sel.RecordProbeLatency(1, urls[1], 30*time.Millisecond)
+
+	for range 120 {
+		picked, _ := sel.SelectURL(1, urls)
+		if picked != urls[0] {
+			t.Fatalf("expected real-data URL to stay ahead of probe-only candidates, got %s", picked)
+		}
+	}
+
+	ordered := orderURLsWithSelector(sel, 1, urls, "")
+	if len(ordered) != 2 {
+		t.Fatalf("expected unified plan to include real then probe without unknown spillover, got %v", ordered)
+	}
+	if ordered[0].url != urls[0] || ordered[1].url != urls[1] {
+		t.Fatalf("expected real URL before probe URL, got %v", ordered)
+	}
+}
+
+func TestURLSelector_ControlledCanaryPicksAtMostOneUnknown(t *testing.T) {
+	sel := NewURLSelector()
+	urls := []string{"https://bad-known.example", "https://u1.example", "https://u2.example", "https://u3.example"}
+
+	sel.RecordLatency(1, urls[0], 200*time.Millisecond)
+	for range 5 {
+		sel.CooldownURL(1, urls[0])
+	}
+	sel.mu.Lock()
+	delete(sel.cooldowns, urlKey{channelID: 1, url: urls[0]})
+	sel.mu.Unlock()
+
+	seenUnknowns := make(map[string]int)
+	for range 120 {
+		ordered := orderURLsWithSelector(sel, 1, urls, "")
+		unknownCount := 0
+		for _, entry := range ordered {
+			if entry.url == urls[0] {
+				continue
+			}
+			unknownCount++
+			seenUnknowns[entry.url]++
+		}
+		if unknownCount > 1 {
+			t.Fatalf("expected at most one unknown canary in a plan, got %v", ordered)
+		}
+	}
+	if len(seenUnknowns) < 2 {
+		t.Fatalf("expected canary rotation across unknown URLs, got %v", seenUnknowns)
 	}
 }
 
@@ -321,5 +421,27 @@ func TestURLSelector_EndToEndPenaltyProfile(t *testing.T) {
 	}
 	if affinityCounts[urls[0]] <= affinityCounts[urls[1]] {
 		t.Fatalf("expected fastest URL to remain the primary pick after escape, counts=%v", affinityCounts)
+	}
+}
+
+func TestURLSelector_SlowTTFBIsolationRemovesVerySlowURLFromPlan(t *testing.T) {
+	sel := NewURLSelector()
+	urls := []string{"https://fast.example", "https://slow.example", "https://probe.example"}
+
+	sel.RecordLatency(1, urls[0], 400*time.Millisecond)
+	sel.RecordLatency(1, urls[1], 5*time.Second)
+	sel.RecordProbeLatency(1, urls[2], 40*time.Millisecond)
+
+	ordered := orderURLsWithSelector(sel, 1, urls, "")
+	if len(ordered) != 2 {
+		t.Fatalf("expected slow isolated URL removed from active plan, got %v", ordered)
+	}
+	if ordered[0].url != urls[0] || ordered[1].url != urls[2] {
+		t.Fatalf("expected fast real then probe fallback while slow URL is isolated, got %v", ordered)
+	}
+
+	stats := sel.GetURLStats(1, urls)
+	if !stats[1].SlowIsolated {
+		t.Fatalf("expected slow URL stats to expose active isolation, stats=%+v", stats)
 	}
 }

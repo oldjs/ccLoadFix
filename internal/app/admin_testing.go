@@ -173,7 +173,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 	if len(urls) > 1 && s != nil && s.urlSelector != nil {
 		selector = s.urlSelector
 	}
-	orderedURLs := orderURLsWithSelector(selector, cfg.ID, urls, "")
+	orderedURLs := orderDiagnosticURLsWithSelector(selector, cfg.ID, urls, "")
 
 	var lastResult map[string]any
 	for idx, entry := range orderedURLs {

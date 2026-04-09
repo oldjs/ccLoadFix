@@ -12,6 +12,8 @@ const (
 	defaultURLSelectorCleanupInterval = time.Hour
 	defaultURLSelectorLatencyMaxAge   = 24 * time.Hour
 	defaultURLSelectorProbeTimeout    = 5 * time.Second
+	slowTTFBIsolationThreshold        = 4 * time.Second
+	slowTTFBSevereThreshold           = 10 * time.Second
 )
 
 // urlKey 标识渠道+URL的组合
@@ -64,6 +66,7 @@ type URLSelector struct {
 	latencies         map[urlKey]*ewmaValue // 真实请求的 TTFB EWMA
 	probeLatencies    map[urlKey]*ewmaValue // 探测出来的 RTT 种子，只在没真实 TTFB 时兜底
 	cooldowns         map[urlKey]urlCooldownState
+	slowIsolations    map[urlKey]time.Time
 	requests          map[urlKey]*urlRequestCount
 	affinities        map[modelAffinityKey]*affinityEntry // 模型亲和性：上次成功的URL
 	noThinkingBlklist map[urlModelKey]time.Time           // thinking黑名单：(URL,模型)→过期时间
@@ -103,6 +106,7 @@ func NewURLSelector() *URLSelector {
 		latencies:         make(map[urlKey]*ewmaValue),
 		probeLatencies:    make(map[urlKey]*ewmaValue),
 		cooldowns:         make(map[urlKey]urlCooldownState),
+		slowIsolations:    make(map[urlKey]time.Time),
 		requests:          make(map[urlKey]*urlRequestCount),
 		affinities:        make(map[modelAffinityKey]*affinityEntry),
 		noThinkingBlklist: make(map[urlModelKey]time.Time),
@@ -145,6 +149,11 @@ func (s *URLSelector) gcLocked(now time.Time, maxAge time.Duration) {
 	for key, cooldown := range s.cooldowns {
 		if !now.Before(cooldown.until) {
 			delete(s.cooldowns, key)
+		}
+	}
+	for key, until := range s.slowIsolations {
+		if !now.Before(until) {
+			delete(s.slowIsolations, key)
 		}
 	}
 
@@ -227,6 +236,14 @@ func (s *URLSelector) PruneChannel(channelID int64, keepURLs []string) {
 			delete(s.cooldowns, key)
 		}
 	}
+	for key := range s.slowIsolations {
+		if key.channelID != channelID {
+			continue
+		}
+		if _, ok := keep[key.url]; !ok {
+			delete(s.slowIsolations, key)
+		}
+	}
 	for key := range s.requests {
 		if key.channelID != channelID {
 			continue
@@ -265,6 +282,7 @@ func (s *URLSelector) RecordLatency(channelID int64, rawURL string, ttfb time.Du
 
 	s.upsertLatencyLocked(s.latencies, key, ms, now)
 	s.recordSuccessLocked(key)
+	s.applySlowTTFBIsolationLocked(key, ttfb, now)
 }
 
 // MarkURLSuccess 只标记这个 URL 已经恢复可用，不写真实 TTFB。
@@ -290,6 +308,29 @@ func (s *URLSelector) recordSuccessLocked(key urlKey) {
 	} else {
 		s.requests[key] = &urlRequestCount{success: 1}
 	}
+}
+
+func (s *URLSelector) applySlowTTFBIsolationLocked(key urlKey, ttfb time.Duration, now time.Time) {
+	duration := s.slowTTFBIsolationDuration(ttfb)
+	if duration <= 0 {
+		delete(s.slowIsolations, key)
+		return
+	}
+	s.slowIsolations[key] = now.Add(duration)
+}
+
+func (s *URLSelector) slowTTFBIsolationDuration(ttfb time.Duration) time.Duration {
+	if ttfb < slowTTFBIsolationThreshold {
+		return 0
+	}
+	base := s.cooldownBase
+	if base <= 0 {
+		base = 2 * time.Minute
+	}
+	if ttfb >= slowTTFBSevereThreshold {
+		return base * 2
+	}
+	return base
 }
 
 // RecordProbeLatency 记录探测出来的 RTT 种子。
@@ -504,8 +545,13 @@ func (s *URLSelector) IsCooledDown(channelID int64, url string) bool {
 	key := urlKey{channelID: channelID, url: url}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	now := time.Now()
 	cd, ok := s.cooldowns[key]
-	return ok && time.Now().Before(cd.until)
+	if ok && now.Before(cd.until) {
+		return true
+	}
+	until, ok := s.slowIsolations[key]
+	return ok && now.Before(until)
 }
 
 // ClearChannelCooldowns 清除指定渠道所有URL的冷却状态和失败计数
@@ -517,6 +563,12 @@ func (s *URLSelector) ClearChannelCooldowns(channelID int64) int {
 	for key := range s.cooldowns {
 		if key.channelID == channelID {
 			delete(s.cooldowns, key)
+			cleared++
+		}
+	}
+	for key := range s.slowIsolations {
+		if key.channelID == channelID {
+			delete(s.slowIsolations, key)
 			cleared++
 		}
 	}
@@ -539,6 +591,8 @@ type URLStat struct {
 	LatencySource      string  `json:"latency_source"`       // ttfb / probe / unknown
 	CooledDown         bool    `json:"cooled_down"`
 	CooldownRemainMs   int64   `json:"cooldown_remain_ms"`
+	SlowIsolated       bool    `json:"slow_isolated"`
+	SlowIsolationMs    int64   `json:"slow_isolation_ms"`
 	Requests           int64   `json:"requests"`
 	Failures           int64   `json:"failures"`
 }
@@ -568,6 +622,14 @@ func (s *URLSelector) GetURLStats(channelID int64, urls []string) []URLStat {
 		if cd, ok := s.cooldowns[key]; ok && now.Before(cd.until) {
 			st.CooledDown = true
 			st.CooldownRemainMs = cd.until.Sub(now).Milliseconds()
+		}
+		if until, ok := s.slowIsolations[key]; ok && now.Before(until) {
+			st.SlowIsolated = true
+			st.SlowIsolationMs = until.Sub(now).Milliseconds()
+			if !st.CooledDown {
+				st.CooledDown = true
+				st.CooldownRemainMs = st.SlowIsolationMs
+			}
 		}
 		if rc, ok := s.requests[key]; ok {
 			st.Requests = rc.success

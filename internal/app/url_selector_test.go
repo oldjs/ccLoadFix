@@ -113,14 +113,46 @@ func TestURLSelector_AffinityEscapesSlowURL(t *testing.T) {
 	sel := NewURLSelector()
 	urls := []string{"https://affinity-slow.com", "https://better.com"}
 
-	sel.RecordLatency(1, "https://affinity-slow.com", 2000*time.Millisecond)
+	sel.RecordLatency(1, "https://affinity-slow.com", 4500*time.Millisecond)
 	sel.RecordLatency(1, "https://better.com", 600*time.Millisecond)
 	sel.SetModelAffinity(1, "gpt-4", "https://affinity-slow.com")
 
-	// affinity URL 的真实 TTFB 比最佳候选慢超过 2 倍时，应该直接跳过 affinity。
+	// 首字慢到进隔离后，软亲和性也不能把它硬拽回来。
 	selected, _ := sel.SelectURLForModel(1, "gpt-4", urls)
 	if selected != "https://better.com" {
 		t.Fatalf("expected affinity escape to better URL, got %s", selected)
+	}
+}
+
+func TestURLSelector_SlowTTFBIsolationSkipsRecentlySlowSuccess(t *testing.T) {
+	sel := NewURLSelector()
+	sel.cooldownBase = 20 * time.Millisecond
+	urls := []string{"https://slow.com", "https://fast.com"}
+
+	sel.RecordLatency(1, "https://slow.com", 5*time.Second)
+	sel.RecordLatency(1, "https://fast.com", 400*time.Millisecond)
+
+	selected, _ := sel.SelectURL(1, urls)
+	if selected != "https://fast.com" {
+		t.Fatalf("expected slow-success URL isolated out of the pool, got %s", selected)
+	}
+
+	stats := sel.GetURLStats(1, urls)
+	if !stats[0].SlowIsolated {
+		t.Fatalf("expected slow URL to report active isolation, stats=%+v", stats)
+	}
+
+	time.Sleep(25 * time.Millisecond)
+	seenSlow := false
+	for range 80 {
+		picked, _ := sel.SelectURL(1, urls)
+		if picked == "https://slow.com" {
+			seenSlow = true
+			break
+		}
+	}
+	if !seenSlow {
+		t.Fatalf("expected slow URL to become selectable again after isolation expires")
 	}
 }
 
@@ -223,15 +255,23 @@ func TestURLSelector_ExploreWhenNoGoodKnown(t *testing.T) {
 	delete(sel.cooldowns, urlKey{channelID: 1, url: "https://a.com"})
 	sel.mu.Unlock()
 
-	// 没有好的已知URL（成功率<50%），应该去探索未知URL
-	seen := map[string]int{}
-	for range 50 {
-		url, _ := sel.SelectURL(1, urls)
-		seen[url]++
+	// 没有好的已知 URL 时，最多只放 1 个未知 URL 进计划里当 canary。
+	unknownSeen := map[string]int{}
+	for range 80 {
+		ordered := orderURLsWithSelector(sel, 1, urls, "")
+		unknownsInPlan := 0
+		for _, entry := range ordered {
+			if entry.url == "https://b.com" || entry.url == "https://c.com" {
+				unknownsInPlan++
+				unknownSeen[entry.url]++
+			}
+		}
+		if unknownsInPlan > 1 {
+			t.Fatalf("expected at most one unknown canary per plan, got %v", ordered)
+		}
 	}
-	if seen["https://b.com"] == 0 && seen["https://c.com"] == 0 {
-		t.Errorf("should explore unknown URLs when no good known URL exists, got a=%d b=%d c=%d",
-			seen["https://a.com"], seen["https://b.com"], seen["https://c.com"])
+	if len(unknownSeen) == 0 {
+		t.Fatalf("expected canary exploration to eventually include an unknown URL")
 	}
 }
 

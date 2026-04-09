@@ -13,7 +13,7 @@ const (
 	latencySourceTTFB    = "ttfb"
 
 	defaultEffectiveLatencyMS = 500.0
-	affinityEscapeMultiplier  = 2.0
+	softAffinityMultiplier    = 1.5
 )
 
 // sortedURL 排序后的 URL 条目。
@@ -23,18 +23,26 @@ type sortedURL struct {
 }
 
 type selectorCandidate struct {
-	url              string
-	idx              int
-	realTTFB         float64
-	probeLatency     float64
-	effectiveLatency float64
-	latencySource    string
-	successRate      float64
-	cooled           bool
+	url               string
+	idx               int
+	realTTFB          float64
+	probeLatency      float64
+	effectiveLatency  float64
+	latencySource     string
+	successRate       float64
+	cooldownActive    bool
+	slowIsolated      bool
+	noThinkingBlocked bool
+	cooled            bool
+	affinity          bool
 }
 
 func (c selectorCandidate) hasLatency() bool {
 	return c.latencySource != latencySourceUnknown
+}
+
+func (c selectorCandidate) hasRealTTFB() bool {
+	return c.latencySource == latencySourceTTFB
 }
 
 func normalizeSelectorLatencyMS(ms float64) float64 {
@@ -80,7 +88,11 @@ func candidateScore(c selectorCandidate) float64 {
 	if successRate > 1 {
 		successRate = 1
 	}
-	return candidateBaseWeight(c) * successRate
+	score := candidateBaseWeight(c) * successRate
+	if c.affinity {
+		score *= softAffinityMultiplier
+	}
+	return score
 }
 
 // SelectURL 从候选 URL 中选一个最优的，不带模型亲和性。
@@ -131,11 +143,17 @@ func (s *URLSelector) buildCandidateLocked(channelID int64, model, rawURL string
 	}
 
 	if cd, ok := s.cooldowns[key]; ok && now.Before(cd.until) {
+		c.cooldownActive = true
+		c.cooled = true
+	}
+	if until, ok := s.slowIsolations[key]; ok && now.Before(until) {
+		c.slowIsolated = true
 		c.cooled = true
 	}
 	if model != "" {
 		umk := urlModelKey{channelID: channelID, url: rawURL, model: model}
 		if expiry, ok := s.noThinkingBlklist[umk]; ok && now.Before(expiry) {
+			c.noThinkingBlocked = true
 			c.cooled = true
 		}
 	}
@@ -143,14 +161,12 @@ func (s *URLSelector) buildCandidateLocked(channelID int64, model, rawURL string
 	return c
 }
 
-func (s *URLSelector) buildCandidatesLocked(channelID int64, model string, urls []string, now time.Time) ([]selectorCandidate, map[string]int) {
-	urlIndex := make(map[string]int, len(urls))
+func (s *URLSelector) buildCandidatesLocked(channelID int64, model string, urls []string, now time.Time) []selectorCandidate {
 	candidates := make([]selectorCandidate, len(urls))
 	for i, rawURL := range urls {
-		urlIndex[rawURL] = i
 		candidates[i] = s.buildCandidateLocked(channelID, model, rawURL, i, now)
 	}
-	return candidates, urlIndex
+	return candidates
 }
 
 func shouldExploreUnknown(known []selectorCandidate) bool {
@@ -164,54 +180,49 @@ func shouldExploreUnknown(known []selectorCandidate) bool {
 
 func splitCandidatesByAvailability(candidates []selectorCandidate) ([]selectorCandidate, []selectorCandidate) {
 	available := make([]selectorCandidate, 0, len(candidates))
-	cooled := make([]selectorCandidate, 0, len(candidates))
+	cooledFallback := make([]selectorCandidate, 0, len(candidates))
+	slowFallback := make([]selectorCandidate, 0, len(candidates))
 	for _, c := range candidates {
-		if c.cooled {
-			cooled = append(cooled, c)
+		if c.noThinkingBlocked {
+			continue
+		}
+		if c.slowIsolated {
+			slowFallback = append(slowFallback, c)
+			continue
+		}
+		if c.cooldownActive {
+			cooledFallback = append(cooledFallback, c)
 			continue
 		}
 		available = append(available, c)
 	}
 	if len(available) == 0 {
-		available = cooled
+		switch {
+		case len(cooledFallback) > 0:
+			available = cooledFallback
+			cooledFallback = nil
+		case len(slowFallback) > 0:
+			available = slowFallback
+		}
 	}
-	return available, cooled
+	return available, cooledFallback
 }
 
-func splitCandidatesByKnownness(candidates []selectorCandidate) ([]selectorCandidate, []selectorCandidate) {
-	known := make([]selectorCandidate, 0, len(candidates))
+func splitCandidatesBySource(candidates []selectorCandidate) ([]selectorCandidate, []selectorCandidate, []selectorCandidate) {
+	real := make([]selectorCandidate, 0, len(candidates))
+	probeOnly := make([]selectorCandidate, 0, len(candidates))
 	unknown := make([]selectorCandidate, 0, len(candidates))
 	for _, c := range candidates {
-		if c.hasLatency() {
-			known = append(known, c)
-			continue
-		}
-		unknown = append(unknown, c)
-	}
-	return known, unknown
-}
-
-func (s *URLSelector) shouldUseAffinityLocked(aff selectorCandidate, available []selectorCandidate) bool {
-	if aff.cooled {
-		return false
-	}
-	if aff.realTTFB < 0 {
-		return true
-	}
-
-	bestAlternative := math.MaxFloat64
-	for _, c := range available {
-		if c.url == aff.url || c.cooled || !c.hasLatency() {
-			continue
-		}
-		if c.effectiveLatency < bestAlternative {
-			bestAlternative = c.effectiveLatency
+		switch c.latencySource {
+		case latencySourceTTFB:
+			real = append(real, c)
+		case latencySourceProbe:
+			probeOnly = append(probeOnly, c)
+		default:
+			unknown = append(unknown, c)
 		}
 	}
-	if bestAlternative == math.MaxFloat64 {
-		return true
-	}
-	return aff.realTTFB <= bestAlternative*affinityEscapeMultiplier
+	return real, probeOnly, unknown
 }
 
 func weightedRandomCandidate(candidates []selectorCandidate) selectorCandidate {
@@ -234,59 +245,182 @@ func weightedRandomCandidate(candidates []selectorCandidate) selectorCandidate {
 	return candidates[len(candidates)-1]
 }
 
-// SelectURLForModel 从候选 URL 中选一个最优的，带模型亲和性。
-func (s *URLSelector) SelectURLForModel(channelID int64, model string, urls []string) (string, int) {
-	if len(urls) == 0 {
-		return "", -1
-	}
-	if len(urls) == 1 {
-		return urls[0], 0
-	}
-
-	now := time.Now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	candidates, urlIndex := s.buildCandidatesLocked(channelID, model, urls, now)
-	available, _ := splitCandidatesByAvailability(candidates)
-
-	if model != "" {
-		ak := modelAffinityKey{channelID: channelID, model: model}
-		if aff, ok := s.affinities[ak]; ok {
-			if idx, found := urlIndex[aff.url]; found {
-				candidate := candidates[idx]
-				if s.shouldUseAffinityLocked(candidate, available) {
-					return candidate.url, candidate.idx
-				}
-			}
+func removeCandidateByURL(candidates []selectorCandidate, rawURL string) []selectorCandidate {
+	trimmed := make([]selectorCandidate, 0, len(candidates))
+	removed := false
+	for _, c := range candidates {
+		if !removed && c.url == rawURL {
+			removed = true
+			continue
 		}
+		trimmed = append(trimmed, c)
 	}
-
-	known, unknown := splitCandidatesByKnownness(available)
-	hasGoodKnown := !shouldExploreUnknown(known)
-	if len(unknown) > 0 && !hasGoodKnown {
-		pick := unknown[rand.IntN(len(unknown))]
-		return pick.url, pick.idx
-	}
-
-	pool := known
-	if !hasGoodKnown && len(unknown) > 0 {
-		pool = append(pool, unknown...)
-	}
-	if len(pool) == 0 {
-		if len(unknown) > 0 {
-			pick := unknown[rand.IntN(len(unknown))]
-			return pick.url, pick.idx
-		}
-		return urls[0], 0
-	}
-
-	pick := weightedRandomCandidate(pool)
-	return pick.url, pick.idx
+	return trimmed
 }
 
-// SortURLs 返回按统一评分排序的 URL 列表，用于故障切换顺序。
-func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
+func sortCandidatesByScore(candidates []selectorCandidate) []selectorCandidate {
+	if len(candidates) <= 1 {
+		return append([]selectorCandidate(nil), candidates...)
+	}
+	sorted := append([]selectorCandidate(nil), candidates...)
+
+	// 同分时先打散，别让同权重 URL 永远按原顺序排。
+	rand.Shuffle(len(sorted), func(i, j int) {
+		sorted[i], sorted[j] = sorted[j], sorted[i]
+	})
+
+	slices.SortStableFunc(sorted, func(left, right selectorCandidate) int {
+		leftScore, rightScore := candidateScore(left), candidateScore(right)
+		if leftScore > rightScore {
+			return -1
+		}
+		if leftScore < rightScore {
+			return 1
+		}
+		if left.successRate > right.successRate {
+			return -1
+		}
+		if left.successRate < right.successRate {
+			return 1
+		}
+		if left.effectiveLatency < right.effectiveLatency {
+			return -1
+		}
+		if left.effectiveLatency > right.effectiveLatency {
+			return 1
+		}
+		return 0
+	})
+	return sorted
+}
+
+func pickCanaryCandidate(candidates []selectorCandidate) selectorCandidate {
+	return weightedRandomCandidate(candidates)
+}
+
+func (s *URLSelector) markAffinityLocked(channelID int64, model string, candidates []selectorCandidate) {
+	if model == "" {
+		return
+	}
+	ak := modelAffinityKey{channelID: channelID, model: model}
+	aff, ok := s.affinities[ak]
+	if !ok || aff == nil || aff.url == "" {
+		return
+	}
+	for i := range candidates {
+		if candidates[i].url == aff.url {
+			candidates[i].affinity = true
+			return
+		}
+	}
+}
+
+func appendCanaryIfNeeded(ordered []selectorCandidate, primary []selectorCandidate, unknown []selectorCandidate) []selectorCandidate {
+	if len(unknown) == 0 {
+		return ordered
+	}
+	if len(primary) > 0 && !shouldExploreUnknown(primary) {
+		return ordered
+	}
+	return append(ordered, pickCanaryCandidate(unknown))
+}
+
+func canaryCandidate(primary []selectorCandidate, unknown []selectorCandidate) (selectorCandidate, bool) {
+	if len(unknown) == 0 {
+		return selectorCandidate{}, false
+	}
+	if len(primary) > 0 && !shouldExploreUnknown(primary) {
+		return selectorCandidate{}, false
+	}
+	return pickCanaryCandidate(unknown), true
+}
+
+func buildPlannedOrder(primary []selectorCandidate) []selectorCandidate {
+	if len(primary) == 0 {
+		return nil
+	}
+	first := weightedRandomCandidate(primary)
+	ordered := []selectorCandidate{first}
+	ordered = append(ordered, sortCandidatesByScore(removeCandidateByURL(primary, first.url))...)
+	return ordered
+}
+
+func appendCooldownFallbacks(ordered []selectorCandidate, cooldownFallback []selectorCandidate) []selectorCandidate {
+	if len(cooldownFallback) == 0 {
+		return ordered
+	}
+	real, probeOnly, _ := splitCandidatesBySource(cooldownFallback)
+	ordered = append(ordered, sortCandidatesByScore(real)...)
+	ordered = append(ordered, sortCandidatesByScore(probeOnly)...)
+	return ordered
+}
+
+func (s *URLSelector) planCandidatesLocked(channelID int64, model string, urls []string, now time.Time) []selectorCandidate {
+	candidates := s.buildCandidatesLocked(channelID, model, urls, now)
+	s.markAffinityLocked(channelID, model, candidates)
+	active, cooledFallback := splitCandidatesByAvailability(candidates)
+	real, probeOnly, unknown := splitCandidatesBySource(active)
+
+	ordered := make([]selectorCandidate, 0, len(active))
+	switch {
+	case len(real) > 0:
+		if canary, ok := canaryCandidate(real, unknown); ok {
+			firstPool := append([]selectorCandidate(nil), real...)
+			firstPool = append(firstPool, canary)
+			first := weightedRandomCandidate(firstPool)
+			ordered = append(ordered, first)
+			if first.url != canary.url {
+				ordered = append(ordered, sortCandidatesByScore(removeCandidateByURL(real, first.url))...)
+				ordered = append(ordered, sortCandidatesByScore(probeOnly)...)
+				ordered = appendCooldownFallbacks(ordered, cooledFallback)
+				ordered = append(ordered, canary)
+				return ordered
+			}
+			ordered = append(ordered, sortCandidatesByScore(real)...)
+			ordered = append(ordered, sortCandidatesByScore(probeOnly)...)
+			ordered = appendCooldownFallbacks(ordered, cooledFallback)
+			return ordered
+		}
+		ordered = append(ordered, buildPlannedOrder(real)...)
+		ordered = append(ordered, sortCandidatesByScore(probeOnly)...)
+		ordered = appendCooldownFallbacks(ordered, cooledFallback)
+		ordered = appendCanaryIfNeeded(ordered, real, unknown)
+	case len(probeOnly) > 0:
+		if canary, ok := canaryCandidate(probeOnly, unknown); ok {
+			firstPool := append([]selectorCandidate(nil), probeOnly...)
+			firstPool = append(firstPool, canary)
+			first := weightedRandomCandidate(firstPool)
+			ordered = append(ordered, first)
+			if first.url != canary.url {
+				ordered = append(ordered, sortCandidatesByScore(removeCandidateByURL(probeOnly, first.url))...)
+				ordered = appendCooldownFallbacks(ordered, cooledFallback)
+				ordered = append(ordered, canary)
+				return ordered
+			}
+			ordered = append(ordered, sortCandidatesByScore(probeOnly)...)
+			ordered = appendCooldownFallbacks(ordered, cooledFallback)
+			return ordered
+		}
+		ordered = append(ordered, buildPlannedOrder(probeOnly)...)
+		ordered = appendCooldownFallbacks(ordered, cooledFallback)
+		ordered = appendCanaryIfNeeded(ordered, probeOnly, unknown)
+	case len(unknown) > 0:
+		ordered = append(ordered, pickCanaryCandidate(unknown))
+		ordered = appendCooldownFallbacks(ordered, cooledFallback)
+	}
+
+	return ordered
+}
+
+func candidatesToSortedURLs(candidates []selectorCandidate) []sortedURL {
+	result := make([]sortedURL, len(candidates))
+	for i, c := range candidates {
+		result[i] = sortedURL{url: c.url, idx: c.idx}
+	}
+	return result
+}
+
+func (s *URLSelector) planURLsForModel(channelID int64, model string, urls []string) []sortedURL {
 	if len(urls) == 0 {
 		return nil
 	}
@@ -298,56 +432,19 @@ func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	candidates, _ := s.buildCandidatesLocked(channelID, "", urls, now)
+	return candidatesToSortedURLs(s.planCandidatesLocked(channelID, model, urls, now))
+}
 
-	// 同分时先打散，别总是把同一个 URL 固定排前面。
-	rand.Shuffle(len(candidates), func(i, j int) {
-		candidates[i], candidates[j] = candidates[j], candidates[i]
-	})
-
-	slices.SortStableFunc(candidates, func(left, right selectorCandidate) int {
-		if left.cooled != right.cooled {
-			if !left.cooled {
-				return -1
-			}
-			return 1
-		}
-
-		leftKnown, rightKnown := left.hasLatency(), right.hasLatency()
-		if leftKnown != rightKnown {
-			if leftKnown {
-				return -1
-			}
-			return 1
-		}
-
-		leftScore, rightScore := candidateScore(left), candidateScore(right)
-		if leftScore > rightScore {
-			return -1
-		}
-		if leftScore < rightScore {
-			return 1
-		}
-
-		if left.successRate > right.successRate {
-			return -1
-		}
-		if left.successRate < right.successRate {
-			return 1
-		}
-
-		if left.effectiveLatency < right.effectiveLatency {
-			return -1
-		}
-		if left.effectiveLatency > right.effectiveLatency {
-			return 1
-		}
-		return 0
-	})
-
-	result := make([]sortedURL, len(candidates))
-	for i, c := range candidates {
-		result[i] = sortedURL{url: c.url, idx: c.idx}
+// SelectURLForModel 从候选 URL 中选一个最优的，模型亲和性只作为软偏置。
+func (s *URLSelector) SelectURLForModel(channelID int64, model string, urls []string) (string, int) {
+	planned := s.planURLsForModel(channelID, model, urls)
+	if len(planned) == 0 {
+		return "", -1
 	}
-	return result
+	return planned[0].url, planned[0].idx
+}
+
+// SortURLs 返回不带模型亲和性的计划顺序，用于诊断或非模型场景。
+func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
+	return s.planURLsForModel(channelID, "", urls)
 }
