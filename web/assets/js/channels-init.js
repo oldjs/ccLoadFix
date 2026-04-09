@@ -106,6 +106,17 @@ window.initPageBootstrap({
 
   // 优先从 localStorage 恢复，其次检查 URL 参数，最后默认 all
   const savedFilters = loadChannelsFilters();
+
+  // 校验缓存的渠道ID是否还存在，删了就清掉，免得用户看到空列表发懵
+  if (savedFilters?.id) {
+    try {
+      await fetchDataWithAuth(`/admin/channels/${savedFilters.id}`);
+    } catch (_) {
+      delete savedFilters.id;
+      saveChannelsFilters();
+    }
+  }
+
   const targetChannelType = await getTargetChannelType();
   const initialType = targetChannelType || (savedFilters?.channelType) || 'all';
 

@@ -64,6 +64,10 @@
         defaultValue: '',
         includeInQuery() {
           return false;
+        },
+        // 渠道被删了就清掉
+        validateAsync: async function(v) {
+          try { await fetchDataWithAuth('/admin/channels/' + v); return true; } catch (_) { return false; }
         }
       },
       {
@@ -1448,7 +1452,7 @@ function shouldShowZoom(points, hours, trendType) {
     window.initPageBootstrap({
       topbarKey: 'trend',
       run: async () => {
-      restoreState();
+      await restoreState();
       restoreChannelState();
       applyRangeUI();
 
@@ -1581,14 +1585,16 @@ function shouldShowZoom(points, hours, trendType) {
       } catch (_) {}
     }
 
-    function restoreState() {
+    async function restoreState() {
       try {
         const savedFilters = loadSavedTrendFilters();
-        const restoredFilters = window.FilterState.restore({
+        let restoredFilters = window.FilterState.restore({
           search: location.search,
           savedFilters,
           fields: TREND_FILTER_FIELDS
         });
+        // 异步校验 channelId，删掉的渠道自动清除
+        restoredFilters = await window.FilterState.validateAsync(restoredFilters, TREND_FILTER_FIELDS);
 
         // 恢复时间范围 (默认"本日")
         const validRanges = window.getDateRangePresets

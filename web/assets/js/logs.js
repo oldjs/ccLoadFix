@@ -902,7 +902,13 @@ function updateTestKeyIndexInfo(text) {
 const LOGS_FILTER_KEY = 'logs.filters';
 const LOGS_FILTER_FIELDS = [
   { key: 'range', queryKeys: ['range'], defaultValue: 'today' },
-  { key: 'channelId', queryKeys: ['channel_id'], defaultValue: '' },
+  {
+    key: 'channelId', queryKeys: ['channel_id'], defaultValue: '',
+    // 渠道被删了就清掉，不然用户看到空日志会懵
+    validateAsync: async function(v) {
+      try { await fetchDataWithAuth('/admin/channels/' + v); return true; } catch (_) { return false; }
+    }
+  },
   { key: 'channelName', queryKeys: ['channel_name_like', 'channel_name'], defaultValue: '' },
   { key: 'model', queryKeys: ['model_like', 'model'], defaultValue: '' },
   { key: 'status', queryKeys: ['status_code'], defaultValue: '' },
@@ -953,11 +959,13 @@ window.initPageBootstrap({
   const u = new URLSearchParams(location.search);
   const hasUrlParams = u.toString().length > 0;
   const savedFilters = window.FilterState.load(LOGS_FILTER_KEY);
-  const restoredFilters = window.FilterState.restore({
+  let restoredFilters = window.FilterState.restore({
     search: location.search,
     savedFilters,
     fields: LOGS_FILTER_FIELDS
   });
+  // 异步校验 channelId 等字段，过期的自动清掉
+  restoredFilters = await window.FilterState.validateAsync(restoredFilters, LOGS_FILTER_FIELDS);
   currentChannelType = restoredFilters.channelType || 'all';
 
   // 并行初始化：渠道类型 + 默认测试内容同时加载（节省一次 RTT）
@@ -1046,11 +1054,12 @@ window.addEventListener('pageshow', async function (event) {
     // 页面从 bfcache 恢复，重新同步筛选器状态
     const savedFilters = window.FilterState.load(LOGS_FILTER_KEY);
     if (savedFilters) {
-      const restoredFilters = window.FilterState.restore({
+      let restoredFilters = window.FilterState.restore({
         search: '',
         savedFilters,
         fields: LOGS_FILTER_FIELDS
       });
+      restoredFilters = await window.FilterState.validateAsync(restoredFilters, LOGS_FILTER_FIELDS);
 
       // 重新加载令牌列表并设置值
       authTokens = await window.loadAuthTokensIntoSelect('f_auth_token');

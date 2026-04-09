@@ -75,6 +75,13 @@
         value = savedFilters[field.key];
       }
 
+      // 同步校验：validate 返回 false 就丢弃这个值
+      if (value !== null && value !== undefined && value !== '' && typeof field.validate === 'function') {
+        if (!field.validate(value)) {
+          value = null;
+        }
+      }
+
       if ((value === null || value === undefined || value === '') && Object.prototype.hasOwnProperty.call(field, 'defaultValue')) {
         value = field.defaultValue;
       }
@@ -163,10 +170,37 @@
     });
   }
 
+  // 异步校验恢复的筛选值，不合法的重置为 defaultValue
+  // fields 里的 validateAsync(value) 返回 false 就清掉
+  async function validateAsync(values, fields) {
+    const cleaned = Object.assign({}, values);
+    const tasks = [];
+
+    (Array.isArray(fields) ? fields : []).forEach(function(field) {
+      if (typeof field.validateAsync !== 'function') return;
+      var value = cleaned[field.key];
+      if (value === null || value === undefined || value === '') return;
+
+      tasks.push(
+        field.validateAsync(value).then(function(valid) {
+          if (!valid) {
+            cleaned[field.key] = Object.prototype.hasOwnProperty.call(field, 'defaultValue')
+              ? field.defaultValue
+              : null;
+          }
+        })
+      );
+    });
+
+    await Promise.all(tasks);
+    return cleaned;
+  }
+
   window.FilterState = {
     load,
     save,
     restore,
+    validateAsync,
     buildParams,
     mergeParams,
     buildRestoreSearch,
