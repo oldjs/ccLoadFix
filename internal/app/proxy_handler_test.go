@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/util"
 )
@@ -116,10 +115,8 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 
 // TestParseIncomingRequest_BodyTooLarge 测试请求体过大
 func TestParseIncomingRequest_BodyTooLarge(t *testing.T) {
-	// 直接设置缓存变量（init 阶段已读 env，t.Setenv 来不及）
-	old := config.MaxBodyBytesOverride
-	config.MaxBodyBytesOverride = 1048576 // 1MB
-	t.Cleanup(func() { config.MaxBodyBytesOverride = old })
+	// 设置较小的限制以便测试
+	t.Setenv("CCLOAD_MAX_BODY_BYTES", "1048576") // 1MB
 
 	// 创建超大请求体（>1MB）
 	largeBody := make([]byte, 2*1024*1024) // 2MB

@@ -1,22 +1,7 @@
 // Package config 定义应用配置常量和默认值
 package config
 
-import (
-	"os"
-	"strconv"
-	"time"
-)
-
-// 环境变量缓存（启动时读取一次，避免热路径每次 os.Getenv）
-var MaxBodyBytesOverride int64
-
-func init() {
-	if v := os.Getenv("CCLOAD_MAX_BODY_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			MaxBodyBytesOverride = int64(n)
-		}
-	}
-}
+import "time"
 
 // HTTP服务器配置常量
 const (
@@ -47,11 +32,6 @@ const (
 	// HTTPTLSHandshakeTimeout TLS握手超时
 	// 10秒：更快失败，上游TLS异常时尽快返回/切换（代价：握手慢时更容易超时）
 	HTTPTLSHandshakeTimeout = 10 * time.Second
-
-	// HTTPResponseHeaderTimeout 发出请求后等待响应头的超时
-	// 30秒：连接已建立但上游迟迟不返回响应头时快速判死，触发重试/切换
-	// 这是砍掉"慢节点死等"的关键配置：TCP连上了但上游卡住不吐数据的场景
-	HTTPResponseHeaderTimeout = 30 * time.Second
 
 	// HTTPMaxIdleConns 全局空闲连接池大小
 	HTTPMaxIdleConns = 200

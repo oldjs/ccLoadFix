@@ -10,6 +10,8 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -62,13 +64,15 @@ func parseIncomingRequest(c *gin.Context) (string, []byte, bool, error) {
 	requestMethod := c.Request.Method
 
 	// 读取请求体（带上限，防止大包打爆内存）
-	// 默认 10MB，images 路径 20MB，可通过 CCLOAD_MAX_BODY_BYTES 覆盖（启动时缓存）
+	// 默认 10MB，images 路径 20MB，可通过 CCLOAD_MAX_BODY_BYTES 覆盖
 	maxBody := int64(config.DefaultMaxBodyBytes)
 	if strings.HasPrefix(requestPath, "/v1/images/") {
 		maxBody = int64(config.DefaultMaxImageBodyBytes)
 	}
-	if config.MaxBodyBytesOverride > 0 {
-		maxBody = config.MaxBodyBytesOverride
+	if v := os.Getenv("CCLOAD_MAX_BODY_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxBody = int64(n)
+		}
 	}
 	limited := io.LimitReader(c.Request.Body, maxBody+1)
 	all, err := io.ReadAll(limited)

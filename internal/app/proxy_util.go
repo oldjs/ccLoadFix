@@ -10,7 +10,6 @@ import (
 	neturl "net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"ccLoad/internal/cooldown"
@@ -34,40 +33,7 @@ const (
 	// 缓冲区大小
 	StreamBufferSize = 32 * 1024 // 流式传输缓冲区（32KB，大文件传输）
 	SSEBufferSize    = 4 * 1024  // SSE流式传输缓冲区（4KB，优化实时响应）
-
-	// 软错误检测预读大小
-	softErrorPeekSize = 512
 )
-
-// 缓冲区池：复用流式传输和软错误检测的缓冲区，减少 GC 压力
-var (
-	streamBufPool    = sync.Pool{New: func() any { b := make([]byte, StreamBufferSize); return &b }}
-	sseBufPool       = sync.Pool{New: func() any { b := make([]byte, SSEBufferSize); return &b }}
-	softErrorBufPool = sync.Pool{New: func() any { b := make([]byte, softErrorPeekSize); return &b }}
-)
-
-// getStreamBuf 从池里拿对应大小的缓冲区
-func getStreamBuf(size int) *[]byte {
-	switch size {
-	case StreamBufferSize:
-		return streamBufPool.Get().(*[]byte)
-	case SSEBufferSize:
-		return sseBufPool.Get().(*[]byte)
-	default:
-		b := make([]byte, size)
-		return &b
-	}
-}
-
-// putStreamBuf 还回去
-func putStreamBuf(buf *[]byte) {
-	switch cap(*buf) {
-	case StreamBufferSize:
-		streamBufPool.Put(buf)
-	case SSEBufferSize:
-		sseBufPool.Put(buf)
-	}
-}
 
 func writeResponseWithHeaders(w http.ResponseWriter, status int, hdr http.Header, body []byte) {
 	if hdr != nil {

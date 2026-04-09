@@ -51,14 +51,7 @@ func (r *firstByteDetector) Read(p []byte) (n int, err error) {
 // ============================================================================
 
 func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.ResponseWriter, onData func([]byte) error, bufSize int) error {
-	// 从池里取缓冲区，用完还回去，避免每次请求分配 32KB/4KB
-	bufPtr := getStreamBuf(bufSize)
-	defer putStreamBuf(bufPtr)
-	buf := *bufPtr
-
-	// 提前断言一次 Flusher，循环里不再重复判断
-	flusher, canFlush := dst.(http.Flusher)
-
+	buf := make([]byte, bufSize)
 	for {
 		select {
 		case <-ctx.Done():
@@ -79,7 +72,7 @@ func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.Respo
 			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
 				return writeErr
 			}
-			if canFlush {
+			if flusher, ok := dst.(http.Flusher); ok {
 				flusher.Flush()
 			}
 		}
