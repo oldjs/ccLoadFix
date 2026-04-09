@@ -259,12 +259,17 @@ func (s *URLSelector) PruneChannel(channelID int64, keepURLs []string) {
 func (s *URLSelector) RemoveChannel(channelID int64) {
 	s.PruneChannel(channelID, nil)
 
-	// 清理该渠道的所有亲和性
+	// 清理该渠道的所有亲和性和 thinking 黑名单
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for key := range s.affinities {
 		if key.channelID == channelID {
 			delete(s.affinities, key)
+		}
+	}
+	for key := range s.noThinkingBlklist {
+		if key.channelID == channelID {
+			delete(s.noThinkingBlklist, key)
 		}
 	}
 }

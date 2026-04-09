@@ -355,6 +355,30 @@ func appendCooldownFallbacks(ordered []selectorCandidate, cooldownFallback []sel
 	return ordered
 }
 
+// planWithCanary 把 canary 混入 primary 的首跳池做加权随机，产出完整的尝试顺序。
+// extraTiers 是优先级低于 primary 但高于 cooldown 的候选（比如 real 场景里的 probeOnly）。
+func planWithCanary(primary []selectorCandidate, canary selectorCandidate, extraTiers []selectorCandidate, cooledFallback []selectorCandidate) []selectorCandidate {
+	// canary 和 primary 一起进首跳池
+	firstPool := append([]selectorCandidate(nil), primary...)
+	firstPool = append(firstPool, canary)
+	first := weightedRandomCandidate(firstPool)
+
+	ordered := []selectorCandidate{first}
+	if first.url != canary.url {
+		// primary 中选到的，canary 放最后当探索兜底
+		ordered = append(ordered, sortCandidatesByScore(removeCandidateByURL(primary, first.url))...)
+		ordered = append(ordered, sortCandidatesByScore(extraTiers)...)
+		ordered = appendCooldownFallbacks(ordered, cooledFallback)
+		ordered = append(ordered, canary)
+	} else {
+		// canary 赢了首跳，primary 全部跟在后面兜底
+		ordered = append(ordered, sortCandidatesByScore(primary)...)
+		ordered = append(ordered, sortCandidatesByScore(extraTiers)...)
+		ordered = appendCooldownFallbacks(ordered, cooledFallback)
+	}
+	return ordered
+}
+
 func (s *URLSelector) planCandidatesLocked(channelID int64, model string, urls []string, now time.Time) []selectorCandidate {
 	candidates := s.buildCandidatesLocked(channelID, model, urls, now)
 	s.markAffinityLocked(channelID, model, candidates)
@@ -365,21 +389,7 @@ func (s *URLSelector) planCandidatesLocked(channelID int64, model string, urls [
 	switch {
 	case len(real) > 0:
 		if canary, ok := canaryCandidate(real, unknown); ok {
-			firstPool := append([]selectorCandidate(nil), real...)
-			firstPool = append(firstPool, canary)
-			first := weightedRandomCandidate(firstPool)
-			ordered = append(ordered, first)
-			if first.url != canary.url {
-				ordered = append(ordered, sortCandidatesByScore(removeCandidateByURL(real, first.url))...)
-				ordered = append(ordered, sortCandidatesByScore(probeOnly)...)
-				ordered = appendCooldownFallbacks(ordered, cooledFallback)
-				ordered = append(ordered, canary)
-				return ordered
-			}
-			ordered = append(ordered, sortCandidatesByScore(real)...)
-			ordered = append(ordered, sortCandidatesByScore(probeOnly)...)
-			ordered = appendCooldownFallbacks(ordered, cooledFallback)
-			return ordered
+			return planWithCanary(real, canary, probeOnly, cooledFallback)
 		}
 		ordered = append(ordered, buildPlannedOrder(real)...)
 		ordered = append(ordered, sortCandidatesByScore(probeOnly)...)
@@ -387,19 +397,7 @@ func (s *URLSelector) planCandidatesLocked(channelID int64, model string, urls [
 		ordered = appendCanaryIfNeeded(ordered, real, unknown)
 	case len(probeOnly) > 0:
 		if canary, ok := canaryCandidate(probeOnly, unknown); ok {
-			firstPool := append([]selectorCandidate(nil), probeOnly...)
-			firstPool = append(firstPool, canary)
-			first := weightedRandomCandidate(firstPool)
-			ordered = append(ordered, first)
-			if first.url != canary.url {
-				ordered = append(ordered, sortCandidatesByScore(removeCandidateByURL(probeOnly, first.url))...)
-				ordered = appendCooldownFallbacks(ordered, cooledFallback)
-				ordered = append(ordered, canary)
-				return ordered
-			}
-			ordered = append(ordered, sortCandidatesByScore(probeOnly)...)
-			ordered = appendCooldownFallbacks(ordered, cooledFallback)
-			return ordered
+			return planWithCanary(probeOnly, canary, nil, cooledFallback)
 		}
 		ordered = append(ordered, buildPlannedOrder(probeOnly)...)
 		ordered = appendCooldownFallbacks(ordered, cooledFallback)

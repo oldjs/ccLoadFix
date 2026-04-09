@@ -445,3 +445,131 @@ func TestURLSelector_SlowTTFBIsolationRemovesVerySlowURLFromPlan(t *testing.T) {
 		t.Fatalf("expected slow URL stats to expose active isolation, stats=%+v", stats)
 	}
 }
+
+func TestURLSelector_AllSlowIsolated_FallsBackToSlowPool(t *testing.T) {
+	sel := NewURLSelector()
+	urls := []string{"https://slow-a.example", "https://slow-b.example"}
+
+	// 两个 URL 都慢到触发隔离
+	sel.RecordLatency(1, urls[0], 5*time.Second)
+	sel.RecordLatency(1, urls[1], 6*time.Second)
+
+	// 全被隔离后选择器仍然返回一个 URL（从 slowFallback 兜底）
+	picked, idx := sel.SelectURL(1, urls)
+	if picked == "" || idx < 0 {
+		t.Fatalf("expected fallback to slow pool when all URLs are isolated, got (%q, %d)", picked, idx)
+	}
+
+	// 应优先选延迟较低的那个
+	counts := runURLSelections(500, func() string {
+		p, _ := sel.SelectURL(1, urls)
+		return p
+	})
+	if counts[urls[0]] <= counts[urls[1]] {
+		t.Fatalf("expected least-slow URL preferred even in slow fallback, counts=%v", counts)
+	}
+}
+
+func TestURLSelector_CooldownAndSlowIsolation_Independent(t *testing.T) {
+	sel := NewURLSelector()
+	sel.cooldownBase = 20 * time.Millisecond
+	url := "https://dual.example"
+
+	// 先触发 cooldown
+	sel.CooldownURL(1, url)
+	if !sel.IsCooledDown(1, url) {
+		t.Fatalf("expected cooldown active")
+	}
+
+	// RecordLatency 清掉 cooldown 但触发慢隔离
+	sel.RecordLatency(1, url, 5*time.Second)
+
+	// cooldown 被成功清了，但 slowIsolation 还在，所以仍然报 cooled
+	sel.mu.RLock()
+	_, hasCooldown := sel.cooldowns[urlKey{channelID: 1, url: url}]
+	_, hasSlowIso := sel.slowIsolations[urlKey{channelID: 1, url: url}]
+	sel.mu.RUnlock()
+
+	if hasCooldown {
+		t.Fatalf("expected cooldown cleared after successful latency record")
+	}
+	if !hasSlowIso {
+		t.Fatalf("expected slow isolation set after 5s TTFB")
+	}
+	if !sel.IsCooledDown(1, url) {
+		t.Fatalf("expected IsCooledDown still true due to slow isolation")
+	}
+
+	// ClearChannelCooldowns 同时清两种
+	sel.ClearChannelCooldowns(1)
+	if sel.IsCooledDown(1, url) {
+		t.Fatalf("expected both cooldown and slow isolation cleared")
+	}
+}
+
+func TestDiagnosticURLsWithSelector_IncludesHiddenURLs(t *testing.T) {
+	sel := NewURLSelector()
+	urls := []string{"https://fast.example", "https://unknown-a.example", "https://unknown-b.example", "https://unknown-c.example"}
+
+	// 只有一个 URL 有真实 TTFB，其余全是 unknown
+	sel.RecordLatency(1, urls[0], 300*time.Millisecond)
+
+	// planner 最多只放 1 个 canary，所以 planned < len(urls)
+	planned := orderURLsWithSelector(sel, 1, urls, "")
+
+	// diagnostic 版本应该把被隐藏的 URL 补回来
+	diagnostic := orderDiagnosticURLsWithSelector(sel, 1, urls, "")
+
+	if len(diagnostic) != len(urls) {
+		t.Fatalf("expected diagnostic to include all %d URLs, got %d: %v", len(urls), len(diagnostic), diagnostic)
+	}
+
+	// 前面的顺序应该和 planned 一致
+	for i, entry := range planned {
+		if diagnostic[i].url != entry.url {
+			t.Fatalf("expected diagnostic prefix to match planned order at position %d: planned=%v diagnostic=%v", i, planned, diagnostic)
+		}
+	}
+
+	// 所有 URL 都应该出现
+	seen := make(map[string]struct{})
+	for _, entry := range diagnostic {
+		seen[entry.url] = struct{}{}
+	}
+	for _, rawURL := range urls {
+		if _, ok := seen[rawURL]; !ok {
+			t.Fatalf("expected diagnostic to include %s, got %v", rawURL, diagnostic)
+		}
+	}
+}
+
+func TestDiagnosticURLsWithSelector_NilSelector(t *testing.T) {
+	urls := []string{"https://a.example", "https://b.example"}
+	result := orderDiagnosticURLsWithSelector(nil, 1, urls, "")
+	if len(result) != len(urls) {
+		t.Fatalf("expected nil selector to return all URLs, got %v", result)
+	}
+}
+
+func TestURLSelector_RemoveChannel_ClearsNoThinkingBlklist(t *testing.T) {
+	sel := NewURLSelector()
+	sel.MarkNoThinking(1, "https://a.example", "model-a")
+	sel.MarkNoThinking(1, "https://b.example", "model-b")
+	sel.MarkNoThinking(2, "https://c.example", "model-c") // 另一个渠道，不该被清
+
+	if !sel.IsNoThinking(1, "https://a.example", "model-a") {
+		t.Fatalf("expected thinking blacklist entry before removal")
+	}
+
+	sel.RemoveChannel(1)
+
+	if sel.IsNoThinking(1, "https://a.example", "model-a") {
+		t.Fatalf("expected thinking blacklist cleared after RemoveChannel")
+	}
+	if sel.IsNoThinking(1, "https://b.example", "model-b") {
+		t.Fatalf("expected all entries for channel 1 cleared")
+	}
+	if !sel.IsNoThinking(2, "https://c.example", "model-c") {
+		t.Fatalf("expected channel 2 entries preserved")
+	}
+}
