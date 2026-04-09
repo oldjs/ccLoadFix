@@ -98,9 +98,10 @@ jobs:
 
       - name: Check for .env file leaks
         run: |
-          if git ls-files --cached | grep -qE '(^|/)\.env($|\.)'; then
+          # 排除 .example 后缀的示例文件，只检测真正的 .env 泄露
+          if git ls-files --cached | grep -E '(^|/)\.env($|\.)' | grep -vE '\.example$' | grep -q .; then
             echo "ERROR: .env file detected in repository!"
-            git ls-files --cached | grep -E '(^|/)\.env($|\.)'
+            git ls-files --cached | grep -E '(^|/)\.env($|\.)' | grep -vE '\.example$'
             exit 1
           fi
           echo "No .env files found in tracked files."
