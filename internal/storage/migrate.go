@@ -669,7 +669,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"log_retention_days", "7", "int", "日志保留天数(-1永久保留,1-365天)", "7"},
 		{"max_key_retries", "3", "int", "单渠道最大Key重试次数", "3"},
 		// 30秒：给推理/长思考模型足够的首字节等待时间，同时避免上游卡死时连接池被耗尽导致雪崩
-		{"upstream_first_byte_timeout", "30", "duration", "上游首字节超时(秒,0=禁用，仅流式)", "30"},
+		{"upstream_first_byte_timeout", "30", "duration", "上游首字节超时(秒,0=自动30s兜底，仅流式)", "30"},
 		{"non_stream_timeout", "120", "duration", "非流式请求超时(秒,0=禁用)", "120"},
 		{"model_fuzzy_match", "false", "bool", "模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)", "false"},
 		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
@@ -707,7 +707,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		metaSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol)
 		if _, err := db.ExecContext(ctx, metaSQL,
-			"上游首字节超时(秒,0=禁用，仅流式)",
+			"上游首字节超时(秒,0=自动30s兜底，仅流式)",
 			"30",
 			"duration",
 			"upstream_first_byte_timeout",

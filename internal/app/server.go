@@ -106,12 +106,15 @@ func NewServer(store storage.Store) *Server {
 		maxKeyRetries = config.DefaultMaxKeyRetries
 	}
 
-	// 默认30秒：推理模型可能需要几秒到十几秒思考，30秒足够宽容；
-	// 但如果上游彻底卡死不吐首字节，30秒后快速失败并切换，防止连接池被占满。
-	firstByteTimeout := configService.GetDuration("upstream_first_byte_timeout", 30*time.Second)
+	firstByteTimeout := configService.GetDuration("upstream_first_byte_timeout", config.DefaultFirstByteTimeout)
 	if firstByteTimeout < 0 {
-		log.Printf("[WARN] 无效的 upstream_first_byte_timeout=%v（必须 >= 0），已设为默认值 30s", firstByteTimeout)
-		firstByteTimeout = 30 * time.Second
+		log.Printf("[WARN] 无效的 upstream_first_byte_timeout=%v（必须 >= 0），已使用兜底值 %v", firstByteTimeout, config.DefaultFirstByteTimeout)
+		firstByteTimeout = config.DefaultFirstByteTimeout
+	}
+	// 用户配了 0（禁用）也用兜底值，防止上游不响应时连接永远挂着、打满连接池
+	if firstByteTimeout == 0 {
+		firstByteTimeout = config.DefaultFirstByteTimeout
+		log.Printf("[INFO] upstream_first_byte_timeout=0，已使用兜底值 %v 防止连接池耗尽", firstByteTimeout)
 	}
 
 	nonStreamTimeout := configService.GetDuration("non_stream_timeout", 120*time.Second)

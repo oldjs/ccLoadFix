@@ -3,6 +3,13 @@ package config
 
 import "time"
 
+// 流式请求超时兜底
+const (
+	// DefaultFirstByteTimeout 流式请求首字节超时兜底值。
+	// 用户配 0 时用这个兜底，防止上游不响应时连接池被占满。
+	DefaultFirstByteTimeout = 30 * time.Second
+)
+
 // HTTP服务器配置常量
 const (
 	// DefaultMaxConcurrency 默认最大并发请求数
