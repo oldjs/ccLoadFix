@@ -15,3 +15,12 @@ var (
 	BuildTime = "unknown"
 	BuiltBy   = "unknown"
 )
+
+// CacheKey 返回用于静态资源缓存的版本标识
+// 优先用 Commit hash，保证每次发版必变；没有的话回退到 Version
+func CacheKey() string {
+	if Commit != "" && Commit != "unknown" {
+		return Commit
+	}
+	return Version
+}

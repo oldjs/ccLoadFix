@@ -120,8 +120,8 @@ func serveHTMLWithVersion(c *gin.Context, filePath string) {
 		return
 	}
 
-	// 替换版本号占位符
-	html := strings.ReplaceAll(string(content), "__VERSION__", version.Version)
+	// 用 commit hash 替换版本号占位符，确保每次发版缓存必刷新
+	html := strings.ReplaceAll(string(content), "__VERSION__", version.CacheKey())
 
 	// HTML 不缓存，确保用户总能获取最新版本号引用
 	c.Header("Cache-Control", "no-cache, must-revalidate")
