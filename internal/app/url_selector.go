@@ -600,6 +600,7 @@ type URLStat struct {
 	SlowIsolationMs    int64   `json:"slow_isolation_ms"`
 	Requests           int64   `json:"requests"`
 	Failures           int64   `json:"failures"`
+	Weight             float64 `json:"weight,omitempty"` // 动态选择权重，反映该URL被选中的相对概率
 }
 
 // GetURLStats 返回指定渠道各URL的运行时状态（延迟、冷却）
@@ -640,6 +641,18 @@ func (s *URLSelector) GetURLStats(channelID int64, urls []string) []URLStat {
 			st.Requests = rc.success
 			st.Failures = rc.failure
 		}
+
+		// 计算动态权重：(1/有效延迟) * 成功率，跟 candidateScore 逻辑一致
+		effLat := st.EffectiveLatencyMs
+		if effLat <= 0 {
+			effLat = defaultEffectiveLatencyMS
+		}
+		successRate := 1.0
+		if total := st.Requests + st.Failures; total > 0 {
+			successRate = float64(st.Requests) / float64(total)
+		}
+		st.Weight = (1.0 / effLat) * successRate
+
 		stats[i] = st
 	}
 	return stats
