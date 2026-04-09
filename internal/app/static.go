@@ -1,6 +1,8 @@
 package app
 
 import (
+	"fmt"
+	"hash/crc32"
 	"io/fs"
 	"log"
 	"net/http"
@@ -113,6 +115,7 @@ func serveStaticFile(c *gin.Context) {
 }
 
 // serveHTMLWithVersion 处理 HTML 文件，替换版本号占位符
+// 用 ETag 做条件请求：内容没变返回 304，省带宽
 func serveHTMLWithVersion(c *gin.Context, filePath string) {
 	content, err := fs.ReadFile(embedFS, filePath)
 	if err != nil {
@@ -123,8 +126,18 @@ func serveHTMLWithVersion(c *gin.Context, filePath string) {
 	// 用 commit hash 替换版本号占位符，确保每次发版缓存必刷新
 	html := strings.ReplaceAll(string(content), "__VERSION__", version.CacheKey())
 
-	// HTML 不缓存，确保用户总能获取最新版本号引用
+	// 对替换后的 HTML 算 crc32 作为 ETag
+	etag := fmt.Sprintf(`"%08x"`, crc32.ChecksumIEEE([]byte(html)))
+
+	// 浏览器带了 If-None-Match 且匹配，直接 304
+	if c.GetHeader("If-None-Match") == etag {
+		c.Status(http.StatusNotModified)
+		return
+	}
+
+	// no-cache 让浏览器每次都来验证，但命中 ETag 就只返回 304 头
 	c.Header("Cache-Control", "no-cache, must-revalidate")
+	c.Header("ETag", etag)
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.String(http.StatusOK, html)
 }
