@@ -142,6 +142,11 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		}
 		oc.KeyCooldowns = keyCooldowns
 
+		// 多URL渠道：附带各URL的运行时状态
+		if urls := cfgCopy.GetURLs(); len(urls) > 1 && s.urlSelector != nil {
+			oc.URLStats = s.urlSelector.GetURLStats(cfgCopy.ID, urls)
+		}
+
 		out = append(out, oc)
 	}
 
@@ -245,10 +250,17 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 	}
 
 	// 渠道详情返回配置和策略，但仍不返回明文 Key；API Keys 继续走 /keys 端点。
-	RespondJSON(c, http.StatusOK, ChannelWithCooldown{
+	resp := ChannelWithCooldown{
 		Config:      cfgCopy,
 		KeyStrategy: channelKeyStrategy(apiKeys),
-	})
+	}
+
+	// 多URL渠道：附带各URL的运行时状态
+	if urls := cfgCopy.GetURLs(); len(urls) > 1 && s.urlSelector != nil {
+		resp.URLStats = s.urlSelector.GetURLStats(cfgCopy.ID, urls)
+	}
+
+	RespondJSON(c, http.StatusOK, resp)
 }
 
 // handleGetChannelKeys 获取渠道的所有 API Keys

@@ -191,6 +191,7 @@ type ChannelWithCooldown struct {
 	KeyCooldowns        []KeyCooldownInfo `json:"key_cooldowns,omitempty"`
 	EffectivePriority   *float64          `json:"effective_priority,omitempty"` // 健康度模式下的有效优先级
 	SuccessRate         *float64          `json:"success_rate,omitempty"`       // 成功率(0-1)
+	URLStats            []URLStat         `json:"url_stats,omitempty"`          // 各URL的运行时状态（延迟/冷却/慢隔离）
 }
 
 // ChannelImportSummary 导入结果统计
