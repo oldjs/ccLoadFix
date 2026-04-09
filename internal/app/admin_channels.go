@@ -97,10 +97,11 @@ func (s *Server) handleListChannels(c *gin.Context) {
 
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
 	for _, cfg := range cfgs {
-		oc := ChannelWithCooldown{Config: cfg}
+		cfgCopy := cloneConfigForAdminResponse(cfg)
+		oc := ChannelWithCooldown{Config: cfgCopy}
 
 		// 渠道级别冷却：使用批量查询结果（性能提升：N -> 1 次查询）
-		if until, cooled := allChannelCooldowns[cfg.ID]; cooled && until.After(now) {
+		if until, cooled := allChannelCooldowns[cfgCopy.ID]; cooled && until.After(now) {
 			oc.CooldownUntil = &until
 			cooldownRemainingMS := int64(until.Sub(now) / time.Millisecond)
 			oc.CooldownRemainingMS = cooldownRemainingMS
@@ -108,16 +109,16 @@ func (s *Server) handleListChannels(c *gin.Context) {
 
 		// 健康度模式：计算有效优先级和成功率
 		if healthEnabled {
-			stats := s.healthCache.GetHealthStats(cfg.ID)
+			stats := s.healthCache.GetHealthStats(cfgCopy.ID)
 			if stats.SampleCount > 0 {
 				oc.SuccessRate = &stats.SuccessRate
 			}
-			effPriority := s.calculateEffectivePriority(cfg, stats, s.healthCache.Config())
+			effPriority := s.calculateEffectivePriority(cfgCopy, stats, s.healthCache.Config())
 			oc.EffectivePriority = &effPriority
 		}
 
 		// 从预加载的map中获取API Keys（O(1)查找）
-		apiKeys := allAPIKeys[cfg.ID]
+		apiKeys := allAPIKeys[cfgCopy.ID]
 
 		// Key 策略属于渠道行为，详情和列表都必须返回同一语义。
 		oc.KeyStrategy = channelKeyStrategy(apiKeys)
@@ -125,7 +126,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		keyCooldowns := make([]KeyCooldownInfo, 0, len(apiKeys))
 
 		// 从批量查询结果中获取该渠道的所有Key冷却状态
-		channelKeyCooldowns := allKeyCooldowns[cfg.ID]
+		channelKeyCooldowns := allKeyCooldowns[cfgCopy.ID]
 
 		for _, apiKey := range apiKeys {
 			keyInfo := KeyCooldownInfo{KeyIndex: apiKey.KeyIndex}
@@ -156,15 +157,6 @@ func (s *Server) handleListChannels(c *gin.Context) {
 			}
 			return pi > pj
 		})
-	}
-
-	// 填充空的重定向模型为请求模型（方便前端编辑时显示）
-	for i := range out {
-		for j := range out[i].ModelEntries {
-			if out[i].Config.ModelEntries[j].RedirectModel == "" {
-				out[i].Config.ModelEntries[j].RedirectModel = out[i].Config.ModelEntries[j].Model
-			}
-		}
 	}
 
 	RespondJSON(c, http.StatusOK, out)
@@ -244,12 +236,7 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
 		return
 	}
-	// 填充空的重定向模型为请求模型（方便前端编辑时显示）
-	for i := range cfg.ModelEntries {
-		if cfg.ModelEntries[i].RedirectModel == "" {
-			cfg.ModelEntries[i].RedirectModel = cfg.ModelEntries[i].Model
-		}
-	}
+	cfgCopy := cloneConfigForAdminResponse(cfg)
 
 	apiKeys, err := s.getAPIKeys(c.Request.Context(), id)
 	if err != nil {
@@ -259,7 +246,7 @@ func (s *Server) handleGetChannel(c *gin.Context, id int64) {
 
 	// 渠道详情返回配置和策略，但仍不返回明文 Key；API Keys 继续走 /keys 端点。
 	RespondJSON(c, http.StatusOK, ChannelWithCooldown{
-		Config:      cfg,
+		Config:      cfgCopy,
 		KeyStrategy: channelKeyStrategy(apiKeys),
 	})
 }

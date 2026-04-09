@@ -33,7 +33,8 @@ func (s *Server) HandleSetChannelCooldown(c *gin.Context) {
 		return
 	}
 
-	// 精确计数(手动设置渠道冷却
+	// 手动改完冷却就把缓存打掉，列表页才能马上看到新状态。
+	s.invalidateCooldownCache()
 
 	RespondJSON(c, http.StatusOK, gin.H{"message": fmt.Sprintf("渠道已冷却 %d 毫秒", req.DurationMs)})
 }
@@ -53,8 +54,8 @@ func (s *Server) HandleClearChannelAllCooldowns(c *gin.Context) {
 
 	// 清所有Key冷却
 	apiKeys, _ := s.store.GetAPIKeys(ctx, id)
-	for i := range apiKeys {
-		_ = s.cooldownManager.ClearKeyCooldown(ctx, id, i)
+	for _, apiKey := range apiKeys {
+		_ = s.cooldownManager.ClearKeyCooldown(ctx, id, apiKey.KeyIndex)
 	}
 
 	// 清所有URL冷却 + 重置失败计数
@@ -101,6 +102,8 @@ func (s *Server) HandleSetKeyCooldown(c *gin.Context) {
 
 	// [INFO] 修复：使API Keys缓存失效，确保前端能立即看到冷却状态
 	s.InvalidateAPIKeysCache(id)
+	// Key 冷却也会出现在渠道列表里，这里一起把冷却缓存打掉。
+	s.invalidateCooldownCache()
 
 	RespondJSON(c, http.StatusOK, gin.H{"message": fmt.Sprintf("Key #%d 已冷却 %d 毫秒", keyIndex+1, req.DurationMs)})
 }

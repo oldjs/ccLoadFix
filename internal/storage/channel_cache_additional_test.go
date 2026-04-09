@@ -245,8 +245,6 @@ func TestChannelCache_CooldownCacheAndInvalidation(t *testing.T) {
 	}
 
 	// Key cooldown：同样验证缓存+失效
-	// 注意：ChannelCache 的 channel/key 冷却共用 lastUpdate（单缓存域）。
-	// 如果不先失效，GetAllKeyCooldowns 可能会“命中”刚刚填充的 channel 冷却缓存，从而返回空的 keys。
 	cache.InvalidateCooldownCache()
 
 	keyUntil1 := now.Add(3 * time.Minute)
@@ -280,5 +278,55 @@ func TestChannelCache_CooldownCacheAndInvalidation(t *testing.T) {
 	}
 	if got := k3[created.ID][0]; got.Unix() != keyUntil2.Unix() {
 		t.Fatalf("expected refreshed key cooldown=%v, got %v", keyUntil2, got)
+	}
+}
+
+func TestChannelCache_CooldownCache_ChannelAndKeyRefreshIndependently(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cache_cooldown_independent.db")
+	store, err := storage.CreateSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("CreateSQLiteStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "ch",
+		URL:          "https://api.example.com",
+		Priority:     1,
+		ModelEntries: []model.ModelEntry{{Model: "m1"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   created.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-0",
+		KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	cache := storage.NewChannelCache(store, 10*time.Minute)
+
+	if _, err := cache.GetAllChannelCooldowns(ctx); err != nil {
+		t.Fatalf("GetAllChannelCooldowns failed: %v", err)
+	}
+
+	keyUntil := time.Now().Add(3 * time.Minute)
+	if err := store.SetKeyCooldown(ctx, created.ID, 0, keyUntil); err != nil {
+		t.Fatalf("SetKeyCooldown failed: %v", err)
+	}
+
+	keyCooldowns, err := cache.GetAllKeyCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllKeyCooldowns failed: %v", err)
+	}
+
+	if got := keyCooldowns[created.ID][0]; got.Unix() != keyUntil.Unix() {
+		t.Fatalf("expected key cooldown=%v, got %v", keyUntil, got)
 	}
 }
