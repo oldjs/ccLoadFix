@@ -156,7 +156,9 @@ func TestTestChannelAPI_MultiURLFallbackAndSelectorFeedback(t *testing.T) {
 		t.Fatalf("expected failed URL to be cooled down, url=%s", failUpstream.URL)
 	}
 	if lat, ok := srv.urlSelector.latencies[urlKey{channelID: cfg.ID, url: okUpstream.URL}]; !ok || lat == nil || lat.value <= 0 {
-		t.Fatalf("expected success URL latency recorded, got=%v", lat)
+		if probe, probeOK := srv.urlSelector.probeLatencies[urlKey{channelID: cfg.ID, url: okUpstream.URL}]; !probeOK || probe == nil || probe.value <= 0 {
+			t.Fatalf("expected success URL latency recorded, real=%v probe=%v", lat, probe)
+		}
 	}
 }
 

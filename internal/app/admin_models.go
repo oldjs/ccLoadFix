@@ -307,7 +307,9 @@ func (s *Server) fetchModelsWithURLFallback(
 				if latency <= 0 {
 					latency = time.Millisecond
 				}
-				s.urlSelector.RecordLatency(channelID, entry.url, latency)
+				// 拉模型列表拿不到真实 TTFB，就只给选择器喂一个 probe 种子，别污染真实请求的 TTFB 统计。
+				s.urlSelector.RecordProbeLatency(channelID, entry.url, latency)
+				s.urlSelector.MarkURLSuccess(channelID, entry.url)
 			}
 			return resp, nil
 		}

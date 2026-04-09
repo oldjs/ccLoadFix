@@ -109,11 +109,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 
 		// 测试成功的URL清冷却+记录延迟，让它立刻恢复可用
 		if forcedBaseURL != "" && s.urlSelector != nil {
-			latency := pickURLSelectorLatency(testResult)
-			if latency <= 0 {
-				latency = time.Second // 兜底给个合理默认值
-			}
-			s.urlSelector.RecordLatency(id, forcedBaseURL, latency)
+			recordURLSelectorLatency(s.urlSelector, id, forcedBaseURL, testResult)
 		}
 
 		s.invalidateChannelRelatedCache(id)
@@ -185,8 +181,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		success, _ := attemptResult["success"].(bool)
 		if success {
 			if selector != nil {
-				latency := pickURLSelectorLatency(attemptResult)
-				selector.RecordLatency(cfg.ID, entry.url, latency)
+				recordURLSelectorLatency(selector, cfg.ID, entry.url, attemptResult)
 			}
 			return attemptResult
 		}
@@ -606,14 +601,31 @@ func shouldFallbackToNextURL(result map[string]any) (continueFallback bool, shou
 	}
 }
 
-func pickURLSelectorLatency(result map[string]any) time.Duration {
+func pickURLSelectorLatency(result map[string]any) (time.Duration, bool) {
 	if ms, ok := getResultInt64(result["first_byte_duration_ms"]); ok && ms > 0 {
-		return time.Duration(ms) * time.Millisecond
+		return time.Duration(ms) * time.Millisecond, true
 	}
 	if ms, ok := getResultInt64(result["duration_ms"]); ok && ms > 0 {
-		return time.Duration(ms) * time.Millisecond
+		return time.Duration(ms) * time.Millisecond, false
 	}
-	return time.Millisecond
+	return 0, false
+}
+
+func recordURLSelectorLatency(selector *URLSelector, channelID int64, rawURL string, result map[string]any) {
+	if selector == nil || rawURL == "" {
+		return
+	}
+	latency, isTTFB := pickURLSelectorLatency(result)
+	if latency <= 0 {
+		return
+	}
+	if isTTFB {
+		selector.RecordLatency(channelID, rawURL, latency)
+		return
+	}
+	// 手动测试有时候只能拿到总耗时，这种数据只适合当 probe 种子，别冒充真实 TTFB。
+	selector.RecordProbeLatency(channelID, rawURL, latency)
+	selector.MarkURLSuccess(channelID, rawURL)
 }
 
 func getResultInt(v any) (int, bool) {
