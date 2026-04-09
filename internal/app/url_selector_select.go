@@ -341,9 +341,11 @@ func appendCooldownFallbacks(ordered []selectorCandidate, cooldownFallback []sel
 	if len(cooldownFallback) == 0 {
 		return ordered
 	}
-	real, probeOnly, _ := splitCandidatesBySource(cooldownFallback)
+	// 冷却URL也得按延迟源分层：有真实TTFB的优先，probe次之，unknown兜底
+	real, probeOnly, unknown := splitCandidatesBySource(cooldownFallback)
 	ordered = append(ordered, sortCandidatesByScore(real)...)
 	ordered = append(ordered, sortCandidatesByScore(probeOnly)...)
+	ordered = append(ordered, sortCandidatesByScore(unknown)...)
 	return ordered
 }
 
@@ -395,7 +397,8 @@ func (s *URLSelector) planCandidatesLocked(channelID int64, model string, urls [
 		ordered = appendCooldownFallbacks(ordered, cooledFallback)
 		ordered = appendCanaryIfNeeded(ordered, probeOnly, unknown)
 	case len(unknown) > 0:
-		ordered = append(ordered, pickCanaryCandidate(unknown))
+		// 全都没延迟数据时，用加权随机+排序产出完整顺序，别只选一个 canary
+		ordered = append(ordered, buildPlannedOrder(unknown)...)
 		ordered = appendCooldownFallbacks(ordered, cooledFallback)
 	}
 
