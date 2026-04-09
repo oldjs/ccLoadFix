@@ -456,20 +456,24 @@
 // ============================================================
 (function () {
   let channelTypesCache = null;
+  let channelTypesCacheTime = 0;
+  // 缓存 5 分钟，避免渠道类型变更后长期不刷新
+  var CHANNEL_TYPES_TTL = 5 * 60 * 1000;
 
   // 复用公共工具（DRY）：真实实现由下方公共工具模块导出到 window.escapeHtml
   const escapeHtml = (str) => window.escapeHtml(str);
 
   /**
-   * 获取渠道类型配置（带缓存）
+   * 获取渠道类型配置（带 5 分钟 TTL 缓存）
    */
   async function getChannelTypes() {
-    if (channelTypesCache) {
+    if (channelTypesCache && (Date.now() - channelTypesCacheTime) < CHANNEL_TYPES_TTL) {
       return channelTypesCache;
     }
 
     const types = await fetchDataWithAuth('/public/channel-types');
     channelTypesCache = types || [];
+    channelTypesCacheTime = Date.now();
     return channelTypesCache;
   }
 
