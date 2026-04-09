@@ -84,9 +84,10 @@ func (s *Server) sortChannelsByHealth(
 // 这样成功率低的渠道优先级被按比例压缩，能跨越任何静态优先级差距
 //
 // 举例（floor=0.2）：
-//   priority=1200, successRate=20% → 1200 × (0.2 + 0.8×0.2) = 1200 × 0.36 = 432
-//   priority=1111, successRate=90% → 1111 × (0.2 + 0.8×0.9) = 1111 × 0.92 = 1022
-//   → 成功率高的渠道自动胜出，不用手动调优先级
+//
+//	priority=1200, successRate=20% → 1200 × (0.2 + 0.8×0.2) = 1200 × 0.36 = 432
+//	priority=1111, successRate=90% → 1111 × (0.2 + 0.8×0.9) = 1111 × 0.92 = 1022
+//	→ 成功率高的渠道自动胜出，不用手动调优先级
 func (s *Server) calculateEffectivePriority(
 	ch *modelpkg.Config,
 	stats modelpkg.ChannelHealthStats,

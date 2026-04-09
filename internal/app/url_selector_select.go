@@ -37,14 +37,6 @@ type selectorCandidate struct {
 	affinity          bool
 }
 
-func (c selectorCandidate) hasLatency() bool {
-	return c.latencySource != latencySourceUnknown
-}
-
-func (c selectorCandidate) hasRealTTFB() bool {
-	return c.latencySource == latencySourceTTFB
-}
-
 func normalizeSelectorLatencyMS(ms float64) float64 {
 	if ms <= 0 || math.IsNaN(ms) || math.IsInf(ms, 0) {
 		return defaultEffectiveLatencyMS

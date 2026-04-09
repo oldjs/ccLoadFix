@@ -204,7 +204,7 @@ func TestURLSelector_AllVerySlowStillPreferLeastSlow(t *testing.T) {
 	})
 	t.Logf("all slow: %v", formatSelectionStats(urls, counts, rounds))
 
-	if !(counts[urls[0]] > counts[urls[1]] && counts[urls[1]] > counts[urls[2]]) {
+	if counts[urls[0]] <= counts[urls[1]] || counts[urls[1]] <= counts[urls[2]] {
 		t.Fatalf("expected least-slow URL to stay ahead even when all are slow, counts=%v", counts)
 	}
 }
@@ -311,7 +311,7 @@ func TestURLSelector_SortAndSelectStayConsistent(t *testing.T) {
 	})
 	t.Logf("sort vs select: %v", formatSelectionStats(urls, counts, rounds))
 
-	if !(counts[urls[0]] > counts[urls[1]] && counts[urls[1]] > counts[urls[2]]) {
+	if counts[urls[0]] <= counts[urls[1]] || counts[urls[1]] <= counts[urls[2]] {
 		t.Fatalf("expected select preference to match sort order, counts=%v sorted=%v", counts, sorted)
 	}
 }
@@ -399,7 +399,7 @@ func TestURLSelector_EndToEndPenaltyProfile(t *testing.T) {
 	})
 	t.Logf("5-url penalty profile: %v", formatSelectionStats(urls, counts, rounds))
 
-	if !(counts[urls[0]] > counts[urls[1]] && counts[urls[1]] > counts[urls[2]]) {
+	if counts[urls[0]] <= counts[urls[1]] || counts[urls[1]] <= counts[urls[2]] {
 		t.Fatalf("expected top three URLs to keep clear ordering after penalties, counts=%v", counts)
 	}
 	if selectionRatio(counts[urls[3]], rounds) > 0.05 {
