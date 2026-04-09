@@ -131,17 +131,13 @@ func (s *URLSelector) gcLocked(now time.Time, maxAge time.Duration) {
 		for key, ewma := range s.latencies {
 			if ewma == nil || ewma.lastSeen.IsZero() || ewma.lastSeen.Before(cutoff) {
 				delete(s.latencies, key)
-				if _, ok := s.probeLatencies[key]; !ok {
-					delete(s.requests, key)
-				}
+				// requests 不跟着删——保留累积的成功率数据，避免 GC 后 URL 权重归零。
+				// requests 由 PruneChannel/RemoveChannel 在渠道配置变更时统一清理。
 			}
 		}
 		for key, ewma := range s.probeLatencies {
 			if ewma == nil || ewma.lastSeen.IsZero() || ewma.lastSeen.Before(cutoff) {
 				delete(s.probeLatencies, key)
-				if _, ok := s.latencies[key]; !ok {
-					delete(s.requests, key)
-				}
 			}
 		}
 	}
@@ -600,7 +596,7 @@ type URLStat struct {
 	SlowIsolationMs    int64   `json:"slow_isolation_ms"`
 	Requests           int64   `json:"requests"`
 	Failures           int64   `json:"failures"`
-	Weight             float64 `json:"weight,omitempty"` // 动态选择权重，反映该URL被选中的相对概率
+	Weight             float64 `json:"weight"` // 动态选择权重，反映该URL被选中的相对概率
 }
 
 // GetURLStats 返回指定渠道各URL的运行时状态（延迟、冷却）
@@ -642,7 +638,7 @@ func (s *URLSelector) GetURLStats(channelID int64, urls []string) []URLStat {
 			st.Failures = rc.failure
 		}
 
-		// 计算动态权重：(1/有效延迟) * 成功率，跟 candidateScore 逻辑一致
+		// 计算动态权重：(1/有效延迟) * 成功率，跟 candidateScore 一致带 5% 下限
 		effLat := st.EffectiveLatencyMs
 		if effLat <= 0 {
 			effLat = defaultEffectiveLatencyMS
@@ -650,6 +646,10 @@ func (s *URLSelector) GetURLStats(channelID int64, urls []string) []URLStat {
 		successRate := 1.0
 		if total := st.Requests + st.Failures; total > 0 {
 			successRate = float64(st.Requests) / float64(total)
+		}
+		// 和 candidateScore 对齐：成功率最低 5%，防止权重归零导致前端显示 "--"
+		if successRate < 0.05 {
+			successRate = 0.05
 		}
 		st.Weight = (1.0 / effLat) * successRate
 

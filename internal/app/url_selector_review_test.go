@@ -331,11 +331,17 @@ func TestURLSelector_ProbeOnlyNeverBeatsRealPrimary(t *testing.T) {
 	}
 
 	ordered := orderURLsWithSelector(sel, 1, urls, "")
-	if len(ordered) != 2 {
-		t.Fatalf("expected unified plan to include real then probe without unknown spillover, got %v", ordered)
+	// unknown URL 作为最低优先级兜底追加到末尾，所以 plan 长度 = 全部 URL
+	if len(ordered) != 3 {
+		t.Fatalf("expected all URLs in plan (real + probe + unknown fallback), got %v", ordered)
 	}
+	// 前两个顺序不变：real 优先，probe 其次
 	if ordered[0].url != urls[0] || ordered[1].url != urls[1] {
 		t.Fatalf("expected real URL before probe URL, got %v", ordered)
+	}
+	// unknown 只能排末尾
+	if ordered[2].url != urls[2] {
+		t.Fatalf("expected unknown URL at tail as fallback, got %v", ordered)
 	}
 }
 
@@ -351,23 +357,29 @@ func TestURLSelector_ControlledCanaryPicksAtMostOneUnknown(t *testing.T) {
 	delete(sel.cooldowns, urlKey{channelID: 1, url: urls[0]})
 	sel.mu.Unlock()
 
-	seenUnknowns := make(map[string]int)
+	seenCanary := make(map[string]int)
 	for range 120 {
 		ordered := orderURLsWithSelector(sel, 1, urls, "")
-		unknownCount := 0
-		for _, entry := range ordered {
+		// 现在 plan 包含所有 URL：canary(1个) + known + 剩余 unknown 兜底
+		// 验证首跳池里最多 1 个 unknown 被提升为 canary（排在 known 前面或同级）
+		canaryCount := 0
+		for i, entry := range ordered {
 			if entry.url == urls[0] {
 				continue
 			}
-			unknownCount++
-			seenUnknowns[entry.url]++
+			// known URL 前面出现的 unknown 算 canary
+			if i == 0 {
+				canaryCount++
+				seenCanary[entry.url]++
+			}
 		}
-		if unknownCount > 1 {
-			t.Fatalf("expected at most one unknown canary in a plan, got %v", ordered)
+		if canaryCount > 1 {
+			t.Fatalf("expected at most one unknown canary promoted in plan, got %v", ordered)
 		}
 	}
-	if len(seenUnknowns) < 2 {
-		t.Fatalf("expected canary rotation across unknown URLs, got %v", seenUnknowns)
+	// canary 应该在多个 unknown URL 之间轮转
+	if len(seenCanary) < 2 {
+		t.Fatalf("expected canary rotation across unknown URLs, got %v", seenCanary)
 	}
 }
 

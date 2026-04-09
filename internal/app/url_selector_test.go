@@ -255,23 +255,25 @@ func TestURLSelector_ExploreWhenNoGoodKnown(t *testing.T) {
 	delete(sel.cooldowns, urlKey{channelID: 1, url: "https://a.com"})
 	sel.mu.Unlock()
 
-	// 没有好的已知 URL 时，最多只放 1 个未知 URL 进计划里当 canary。
+	// 没有好的已知 URL 时，canary 会提升 1 个 unknown 到首跳池，
+	// 剩余 unknown 作为最低优先级兜底追加到计划末尾。
 	unknownSeen := map[string]int{}
 	for range 80 {
 		ordered := orderURLsWithSelector(sel, 1, urls, "")
-		unknownsInPlan := 0
+		// 全部 URL 都应在计划里（known + canary + 兜底）
+		if len(ordered) != len(urls) {
+			t.Fatalf("expected all URLs in plan, got %v", ordered)
+		}
+		// 首跳应该是 canary（unknown）或 known，不是固定的
 		for _, entry := range ordered {
 			if entry.url == "https://b.com" || entry.url == "https://c.com" {
-				unknownsInPlan++
 				unknownSeen[entry.url]++
 			}
 		}
-		if unknownsInPlan > 1 {
-			t.Fatalf("expected at most one unknown canary per plan, got %v", ordered)
-		}
 	}
-	if len(unknownSeen) == 0 {
-		t.Fatalf("expected canary exploration to eventually include an unknown URL")
+	// unknown URL 应该轮转出现在 canary 位置
+	if len(unknownSeen) < 2 {
+		t.Fatalf("expected canary rotation across unknown URLs, got %v", unknownSeen)
 	}
 }
 

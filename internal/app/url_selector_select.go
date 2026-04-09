@@ -337,6 +337,25 @@ func buildPlannedOrder(primary []selectorCandidate) []selectorCandidate {
 	return ordered
 }
 
+// appendRemainingUnknowns 把还没出现在 ordered 里的 unknown URL 追加到末尾。
+// 这样即使 shouldExploreUnknown=false，unknown URL 也会作为最低优先级兜底出现在计划里，
+// 在所有已知 URL 全部失败时有机会被试到，防止 GC 清掉延迟数据后 URL 永久失活。
+func appendRemainingUnknowns(ordered []selectorCandidate, unknown []selectorCandidate) []selectorCandidate {
+	if len(unknown) == 0 {
+		return ordered
+	}
+	seen := make(map[string]struct{}, len(ordered))
+	for _, c := range ordered {
+		seen[c.url] = struct{}{}
+	}
+	for _, c := range unknown {
+		if _, ok := seen[c.url]; !ok {
+			ordered = append(ordered, c)
+		}
+	}
+	return ordered
+}
+
 func appendCooldownFallbacks(ordered []selectorCandidate, cooldownFallback []selectorCandidate) []selectorCandidate {
 	if len(cooldownFallback) == 0 {
 		return ordered
@@ -383,19 +402,25 @@ func (s *URLSelector) planCandidatesLocked(channelID int64, model string, urls [
 	switch {
 	case len(real) > 0:
 		if canary, ok := canaryCandidate(real, unknown); ok {
-			return planWithCanary(real, canary, probeOnly, cooledFallback)
+			planned := planWithCanary(real, canary, probeOnly, cooledFallback)
+			// canary 只选了一个 unknown，剩下的追加到末尾做兜底
+			return appendRemainingUnknowns(planned, unknown)
 		}
 		ordered = append(ordered, buildPlannedOrder(real)...)
 		ordered = append(ordered, sortCandidatesByScore(probeOnly)...)
 		ordered = appendCooldownFallbacks(ordered, cooledFallback)
 		ordered = appendCanaryIfNeeded(ordered, real, unknown)
+		// 不管 canary 有没有选中，剩余 unknown 都追加到末尾做最低优先级兜底
+		ordered = appendRemainingUnknowns(ordered, unknown)
 	case len(probeOnly) > 0:
 		if canary, ok := canaryCandidate(probeOnly, unknown); ok {
-			return planWithCanary(probeOnly, canary, nil, cooledFallback)
+			planned := planWithCanary(probeOnly, canary, nil, cooledFallback)
+			return appendRemainingUnknowns(planned, unknown)
 		}
 		ordered = append(ordered, buildPlannedOrder(probeOnly)...)
 		ordered = appendCooldownFallbacks(ordered, cooledFallback)
 		ordered = appendCanaryIfNeeded(ordered, probeOnly, unknown)
+		ordered = appendRemainingUnknowns(ordered, unknown)
 	case len(unknown) > 0:
 		// 全都没延迟数据时，用加权随机+排序产出完整顺序，别只选一个 canary
 		ordered = append(ordered, buildPlannedOrder(unknown)...)
