@@ -206,6 +206,14 @@ window.initPageBootstrap({
     renderChannels();
     updateModelOptions();
   });
+
+  // 其他标签页改了渠道数据，这边清缓存并重新加载
+  if (window.CacheSync) {
+    window.CacheSync.onInvalidate('channels-invalidate', () => {
+      clearChannelsCache();
+      loadChannels(filters.channelType);
+    });
+  }
   }
 });
 

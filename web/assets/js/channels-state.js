@@ -58,8 +58,12 @@ let virtualScrollState = {
 };
 
 // 清除渠道缓存（在增删改操作后调用）
+// 同时通知其他标签页也清缓存
 function clearChannelsCache() {
   channelsCache = {};
+  if (window.CacheSync) {
+    window.CacheSync.notify('channels-invalidate');
+  }
 }
 
 function humanizeMS(ms) {
