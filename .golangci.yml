@@ -26,6 +26,10 @@ linters:
         # 禁用包名检查（util 等通用包名在 internal 中是合理的）
         - name: var-naming
           disabled: true
+  exclusions:
+    paths:
+      - vendor
+      - testdata
 
 formatters:
   enable:
@@ -35,8 +39,3 @@ formatters:
     goimports:
       local-prefixes:
         - ccLoad
-
-issues:
-  exclude-dirs:
-    - vendor
-    - testdata
