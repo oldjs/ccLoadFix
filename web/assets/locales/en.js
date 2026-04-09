@@ -1001,6 +1001,11 @@ window.I18N_LOCALES['en'] = {
   'channels.urlStatusNormal': 'Normal',
   'channels.urlStatusCooldown': 'Cooldown',
   'channels.urlStatusUnknown': 'Unknown',
+  'channels.urlWeight': 'Weight',
+  'channels.urlStatusSlow': 'Slow',
+  'channels.urlLatencySource': 'Source',
+  'channels.urlLatencyProbe': 'Probe',
+  'channels.urlLatencyEffective': 'Effective',
   // Key Export
   'channels.exportKeys': 'Export',
   'channels.exportKeysTitle': 'Export API Keys',

@@ -251,6 +251,12 @@ function createURLRow(index) {
     const actionsTd = row.querySelectorAll('td');
     const lastTd = actionsTd[actionsTd.length - 1]; // actions列
 
+    // 权重列
+    const weightTd = document.createElement('td');
+    weightTd.className = 'inline-url-cell-center inline-url-cell-metric inline-url-col-weight';
+    weightTd.setAttribute('data-mobile-label', window.t('channels.urlWeight'));
+    weightTd.innerHTML = formatURLWeight(stat);
+
     const statusTd = document.createElement('td');
     statusTd.className = 'inline-url-cell-center inline-url-col-status';
     statusTd.setAttribute('data-mobile-label', window.t('common.status'));
@@ -259,13 +265,14 @@ function createURLRow(index) {
     const latencyTd = document.createElement('td');
     latencyTd.className = 'inline-url-cell-center inline-url-cell-metric inline-url-col-latency';
     latencyTd.setAttribute('data-mobile-label', window.t('stats.latency'));
-    latencyTd.textContent = formatURLLatency(stat);
+    latencyTd.innerHTML = formatURLLatencyHTML(stat);
 
     const requestsTd = document.createElement('td');
     requestsTd.className = 'inline-url-cell-center inline-url-cell-metric inline-url-col-requests';
     requestsTd.setAttribute('data-mobile-label', window.t('common.requests'));
     requestsTd.innerHTML = formatURLRequests(stat);
 
+    row.insertBefore(weightTd, lastTd);
     row.insertBefore(statusTd, lastTd);
     row.insertBefore(latencyTd, lastTd);
     row.insertBefore(requestsTd, lastTd);
@@ -848,6 +855,12 @@ function formatURLStatus(stat) {
       + '<span class="inline-url-status-dot inline-url-status-dot--cooldown"></span>'
       + `${remain}</span>`;
   }
+  // 慢隔离
+  if (stat.slow_isolated) {
+    return '<span class="inline-url-status-badge inline-url-status-badge--slow" title="' + window.t('channels.urlStatusSlow') + '">'
+      + '<span class="inline-url-status-dot inline-url-status-dot--slow"></span>'
+      + window.t('channels.urlStatusSlow') + '</span>';
+  }
   if (stat.latency_ms < 0) {
     return '<span class="inline-url-status-badge inline-url-status-badge--unknown">'
       + '<span class="inline-url-status-dot inline-url-status-dot--unknown"></span>'
@@ -863,6 +876,41 @@ function formatURLLatency(stat) {
   const ms = Math.round(stat.latency_ms);
   if (ms < 1000) return ms + 'ms';
   return (ms / 1000).toFixed(1) + 's';
+}
+
+// 带tooltip的延迟，hover显示TTFB/探测/有效延迟详情
+function formatURLLatencyHTML(stat) {
+  const text = formatURLLatency(stat);
+  if (!stat || stat.latency_ms < 0) return text;
+
+  const parts = [];
+  if (stat.latency_source) parts.push(window.t('channels.urlLatencySource') + ': ' + stat.latency_source);
+  if (stat.ttfb_latency_ms > 0) parts.push('TTFB: ' + Math.round(stat.ttfb_latency_ms) + 'ms');
+  if (stat.probe_latency_ms > 0) parts.push(window.t('channels.urlLatencyProbe') + ': ' + Math.round(stat.probe_latency_ms) + 'ms');
+  if (stat.effective_latency_ms > 0) parts.push(window.t('channels.urlLatencyEffective') + ': ' + Math.round(stat.effective_latency_ms) + 'ms');
+  if (parts.length === 0) return text;
+  return `<span title="${parts.join('&#10;')}" style="cursor: help; border-bottom: 1px dotted var(--neutral-400);">${text}</span>`;
+}
+
+// 权重百分比
+function formatURLWeight(stat) {
+  if (!stat || !stat.weight || stat.weight <= 0) return '<span class="inline-url-status-placeholder">--</span>';
+
+  // 算总权重转百分比
+  let total = 0;
+  for (const s of Object.values(urlStatsMap)) {
+    if (s.weight > 0) total += s.weight;
+  }
+  if (total <= 0) return '<span class="inline-url-status-placeholder">--</span>';
+
+  const pct = stat.weight / total * 100;
+  const display = pct < 1 ? '<1%' : Math.round(pct) + '%';
+
+  // 冷却或慢隔离用灰色
+  if (stat.cooled_down || stat.slow_isolated) {
+    return `<span class="inline-url-weight-muted">${display}</span>`;
+  }
+  return `<span class="inline-url-weight">${display}</span>`;
 }
 
 function formatURLRequests(stat) {
@@ -885,6 +933,11 @@ function updateURLStatsHeader() {
 
   const actionsTh = thead.querySelector('th:last-child');
 
+  // 权重列头
+  const weightTh = document.createElement('th');
+  weightTh.className = 'url-stats-th inline-url-col-weight';
+  weightTh.textContent = window.t('channels.urlWeight');
+
   const statusTh = document.createElement('th');
   statusTh.className = 'url-stats-th inline-url-col-status';
   statusTh.textContent = window.t('channels.urlStatus');
@@ -897,6 +950,7 @@ function updateURLStatsHeader() {
   requestsTh.className = 'url-stats-th inline-url-col-requests';
   requestsTh.textContent = window.t('channels.urlRequests');
 
+  thead.insertBefore(weightTh, actionsTh);
   thead.insertBefore(statusTh, actionsTh);
   thead.insertBefore(latencyTh, actionsTh);
   thead.insertBefore(requestsTh, actionsTh);

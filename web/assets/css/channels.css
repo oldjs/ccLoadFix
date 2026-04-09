@@ -1682,6 +1682,12 @@
       text-align: center;
     }
 
+    .inline-url-col-weight {
+      width: 52px;
+      white-space: nowrap;
+      text-align: center;
+    }
+
     .inline-url-header {
       display: flex;
       align-items: center;
@@ -1766,6 +1772,24 @@
 
     .inline-url-status-dot--unknown {
       background: var(--neutral-400);
+    }
+
+    .inline-url-status-badge--slow {
+      background: #FEF3C7;
+      color: #D97706;
+    }
+
+    .inline-url-status-dot--slow {
+      background: #D97706;
+    }
+
+    .inline-url-weight {
+      font-weight: 600;
+      color: var(--neutral-700);
+    }
+
+    .inline-url-weight-muted {
+      color: var(--neutral-400);
     }
 
     /* thinking 黑名单标记 */
@@ -2465,9 +2489,18 @@
         min-width: 0;
       }
 
+      .inline-url-table tbody .mobile-inline-row td.inline-url-col-weight {
+        order: 9;
+        grid-column: 1;
+        grid-row: 2;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-status {
         order: 10;
-        grid-column: 1 / 3;
+        grid-column: 2;
         grid-row: 2;
         display: flex;
         align-items: center;

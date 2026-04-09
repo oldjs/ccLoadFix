@@ -53,8 +53,13 @@ test('编辑弹窗 Key 状态筛选下拉复用统一浅色选择框样式', () 
 });
 
 test('URL 统计列使用紧凑列宽样式，避免挤压 API URL 列', () => {
+  assert.match(urlScript, /weightTh\.className = 'url-stats-th inline-url-col-weight'/);
   assert.match(urlScript, /statusTh\.className = 'url-stats-th inline-url-col-status'/);
   assert.match(urlScript, /latencyTh\.className = 'url-stats-th inline-url-col-latency'/);
+
+  const weightColumnStyle = css.match(/\.inline-url-col-weight\s*\{[^}]+\}/);
+  assert.ok(weightColumnStyle, '缺少 .inline-url-col-weight 样式');
+  assert.match(weightColumnStyle[0], /width:\s*52px/);
 
   const statusColumnStyle = css.match(/\.inline-url-col-status\s*\{[^}]+\}/);
   assert.ok(statusColumnStyle, '缺少 .inline-url-col-status 样式');

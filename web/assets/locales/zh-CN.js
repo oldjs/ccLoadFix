@@ -1001,6 +1001,11 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.urlStatusNormal': '正常',
   'channels.urlStatusCooldown': '冷却中',
   'channels.urlStatusUnknown': '未探测',
+  'channels.urlWeight': '权重',
+  'channels.urlStatusSlow': '慢速',
+  'channels.urlLatencySource': '来源',
+  'channels.urlLatencyProbe': '探测',
+  'channels.urlLatencyEffective': '有效',
   // Key导出
   'channels.exportKeys': '导出',
   'channels.exportKeysTitle': '导出 API Keys',
