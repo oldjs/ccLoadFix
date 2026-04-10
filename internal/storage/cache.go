@@ -7,28 +7,41 @@ import (
 	"log"
 	"maps"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	modelpkg "ccLoad/internal/model"
 	"ccLoad/internal/util"
 )
 
+// channelSnapshot COW 不可变快照，读操作直接返回引用（零拷贝）
+// 写操作原子替换整个快照，旧快照由 GC 回收
+type channelSnapshot struct {
+	byModel  map[string][]*modelpkg.Config // model → channels
+	byType   map[string][]*modelpkg.Config // type → channels
+	all      []*modelpkg.Config            // 所有渠道
+	builtAt  time.Time
+}
+
 // ChannelCache 高性能渠道缓存层
 // 内存查询比数据库查询快 1000 倍+
+// 改造为 COW 模式：读操作零拷贝，写操作原子替换快照
 type ChannelCache struct {
-	store           Store
-	channelsByModel map[string][]*modelpkg.Config // model → channels
-	channelsByType  map[string][]*modelpkg.Config // type → channels
-	allChannels     []*modelpkg.Config            // 所有渠道
-	lastUpdate      time.Time
-	mutex           sync.RWMutex
-	ttl             time.Duration
+	store    Store
+	snapshot atomic.Pointer[channelSnapshot] // COW 快照，读不加锁
+	ttl      time.Duration
+	// refreshMu 保护刷新过程，防止多个 goroutine 并发刷新
+	refreshMu sync.Mutex
 
-	// 扩展缓存支持更多关键查询
-	apiKeysByChannelID map[int64][]*modelpkg.APIKey // channelID → API keys
-	cooldownCache      struct {
-		channels           map[int64]time.Time         // channelID → cooldown until
-		keys               map[int64]map[int]time.Time // channelID→keyIndex→cooldown until
+	// API Key 缓存（按需加载，非 COW——写频率更高）
+	apiKeysMu          sync.RWMutex
+	apiKeysByChannelID map[int64][]*modelpkg.APIKey
+
+	// 冷却状态缓存（短 TTL，独立管理）
+	cooldownMu    sync.RWMutex
+	cooldownCache struct {
+		channels           map[int64]time.Time
+		keys               map[int64]map[int]time.Time
 		channelsLastUpdate time.Time
 		keysLastUpdate     time.Time
 		ttl                time.Duration
@@ -37,120 +50,64 @@ type ChannelCache struct {
 
 // NewChannelCache 创建渠道缓存实例
 func NewChannelCache(store Store, ttl time.Duration) *ChannelCache {
-	return &ChannelCache{
-		store:           store,
-		channelsByModel: make(map[string][]*modelpkg.Config),
-		channelsByType:  make(map[string][]*modelpkg.Config),
-		allChannels:     make([]*modelpkg.Config, 0),
-		ttl:             ttl,
-
-		// 初始化扩展缓存
+	c := &ChannelCache{
+		store:              store,
+		ttl:                ttl,
 		apiKeysByChannelID: make(map[int64][]*modelpkg.APIKey),
-		cooldownCache: struct {
-			channels           map[int64]time.Time
-			keys               map[int64]map[int]time.Time
-			channelsLastUpdate time.Time
-			keysLastUpdate     time.Time
-			ttl                time.Duration
-		}{
-			channels: make(map[int64]time.Time),
-			keys:     make(map[int64]map[int]time.Time),
-			ttl:      30 * time.Second, // 冷却状态缓存30秒
-		},
 	}
+	// 初始化冷却缓存
+	c.cooldownCache.channels = make(map[int64]time.Time)
+	c.cooldownCache.keys = make(map[int64]map[int]time.Time)
+	c.cooldownCache.ttl = 30 * time.Second
+
+	// 存一个空快照，避免 nil 判断
+	c.snapshot.Store(&channelSnapshot{
+		byModel: make(map[string][]*modelpkg.Config),
+		byType:  make(map[string][]*modelpkg.Config),
+		all:     make([]*modelpkg.Config, 0),
+		builtAt: time.Time{}, // 零值，首次读必定触发刷新
+	})
+	return c
 }
 
-// deepCopyConfig 深拷贝 Config 对象（包括 slice）
-// 防止调用方修改污染缓存
-// 设计：拷贝所有可变字段（ModelEntries），重置索引缓存（modelIndex + indexOnce）
-// [FIX] P0: 重置索引缓存，避免复制 sync.Once 和指向旧 slice 的 map
-func deepCopyConfig(src *modelpkg.Config) *modelpkg.Config {
-	if src == nil {
-		return nil
-	}
-
-	dst := &modelpkg.Config{
-		ID:                 src.ID,
-		Name:               src.Name,
-		ChannelType:        src.ChannelType,
-		URL:                src.URL,
-		Priority:           src.Priority,
-		Enabled:            src.Enabled,
-		CooldownUntil:      src.CooldownUntil,
-		CooldownDurationMs: src.CooldownDurationMs,
-		DailyCostLimit:     src.DailyCostLimit,
-		CreatedAt:          src.CreatedAt,
-		UpdatedAt:          src.UpdatedAt,
-		KeyCount:           src.KeyCount,
-	}
-
-	// 深拷贝 ModelEntries slice
-	if src.ModelEntries != nil {
-		dst.ModelEntries = make([]modelpkg.ModelEntry, len(src.ModelEntries))
-		copy(dst.ModelEntries, src.ModelEntries)
-	}
-
-	return dst
-}
-
-// deepCopyConfigs 批量深拷贝 Config 对象
-// 缓存边界隔离，避免共享指针污染
-func deepCopyConfigs(src []*modelpkg.Config) []*modelpkg.Config {
-	if src == nil {
-		return nil
-	}
-
-	result := make([]*modelpkg.Config, len(src))
-	for i, cfg := range src {
-		result[i] = deepCopyConfig(cfg)
-	}
-	return result
+// getSnapshot 获取当前快照（零拷贝读）
+func (c *ChannelCache) getSnapshot() *channelSnapshot {
+	return c.snapshot.Load()
 }
 
 // GetEnabledChannelsByModel 缓存优先的模型查询
-// [FIX] P0-2: 返回深拷贝，防止调用方污染缓存
+// COW 模式：直接返回快照引用，零拷贝
+// 调用方不得修改返回的 Config 对象（只读约定）
 func (c *ChannelCache) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*modelpkg.Config, error) {
 	if err := c.refreshIfNeeded(ctx); err != nil {
-		// 缓存失败时降级到数据库查询
 		return c.store.GetEnabledChannelsByModel(ctx, model)
 	}
 
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
+	snap := c.getSnapshot()
 	if model == "*" {
-		// 返回所有渠道的深拷贝（隔离可变字段：ModelEntries）
-		return deepCopyConfigs(c.allChannels), nil
+		return snap.all, nil
 	}
-
-	// 返回指定模型的渠道深拷贝
-	channels, exists := c.channelsByModel[model]
+	channels, exists := snap.byModel[model]
 	if !exists {
 		return []*modelpkg.Config{}, nil
 	}
-
-	return deepCopyConfigs(channels), nil
+	return channels, nil
 }
 
 // GetEnabledChannelsByType 缓存优先的类型查询
-// [FIX] P0-2: 返回深拷贝，防止调用方污染缓存
+// COW 模式：直接返回快照引用，零拷贝
 func (c *ChannelCache) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*modelpkg.Config, error) {
 	normalizedType := util.NormalizeChannelType(channelType)
 	if err := c.refreshIfNeeded(ctx); err != nil {
-		// 缓存失败时降级到数据库查询
 		return c.store.GetEnabledChannelsByType(ctx, normalizedType)
 	}
 
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
-	channels, exists := c.channelsByType[normalizedType]
+	snap := c.getSnapshot()
+	channels, exists := snap.byType[normalizedType]
 	if !exists {
 		return []*modelpkg.Config{}, nil
 	}
-
-	// 返回深拷贝（隔离可变字段：ModelEntries）
-	return deepCopyConfigs(channels), nil
+	return channels, nil
 }
 
 // GetConfig 获取指定ID的渠道配置
@@ -159,59 +116,54 @@ func (c *ChannelCache) GetConfig(ctx context.Context, channelID int64) (*modelpk
 	return c.store.GetConfig(ctx, channelID)
 }
 
-// refreshIfNeeded 智能缓存刷新
+// refreshIfNeeded 检查快照是否过期，过期则刷新
 func (c *ChannelCache) refreshIfNeeded(ctx context.Context) error {
-	c.mutex.RLock()
-	needsRefresh := time.Since(c.lastUpdate) > c.ttl
-	c.mutex.RUnlock()
-
-	if !needsRefresh {
+	snap := c.getSnapshot()
+	if time.Since(snap.builtAt) <= c.ttl {
 		return nil
 	}
-
 	return c.refreshCache(ctx)
 }
 
-// refreshCache 刷新缓存数据
-// 说明：缓存内部索引共享指针；对外统一返回深拷贝，避免调用方污染缓存。
+// refreshCache 刷新缓存：构建新快照并原子替换
 func (c *ChannelCache) refreshCache(ctx context.Context) error {
-	start := time.Now()
+	// 只允许一个 goroutine 刷新，其他的用旧快照
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
 
+	// 双重检查
+	if time.Since(c.getSnapshot().builtAt) <= c.ttl {
+		return nil
+	}
+
+	start := time.Now()
 	allChannels, err := c.store.GetEnabledChannelsByModel(ctx, "*")
 	if err != nil {
 		return err
 	}
 
-	// 构建按类型分组的索引（内部共享指针，对外深拷贝隔离）
+	// 预构建 modelIndex，这样读操作不会触发 buildIndexIfNeeded 的写锁
+	for _, ch := range allChannels {
+		ch.PreBuildIndex()
+	}
+
 	byModel := make(map[string][]*modelpkg.Config)
 	byType := make(map[string][]*modelpkg.Config)
-
 	for _, channel := range allChannels {
 		channelType := channel.GetChannelType()
-		byType[channelType] = append(byType[channelType], channel) // 内部共享
-
-		// 同时填充模型索引（使用 GetModels() 辅助方法）
+		byType[channelType] = append(byType[channelType], channel)
 		for _, model := range channel.GetModels() {
-			byModel[model] = append(byModel[model], channel) // 内部共享
+			byModel[model] = append(byModel[model], channel)
 		}
 	}
 
-	refreshedAt := time.Now()
-
-	// 数据已经拉回来了，这时再短暂拿写锁把结果切进去。
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	// 双重检查，别把别的 goroutine 刚刷新的结果又覆盖回去。
-	if time.Since(c.lastUpdate) <= c.ttl {
-		return nil
-	}
-
-	// 原子性更新缓存（整体替换，不修改单个对象）
-	c.allChannels = allChannels
-	c.channelsByModel = byModel
-	c.channelsByType = byType
-	c.lastUpdate = refreshedAt
+	// 原子替换快照
+	c.snapshot.Store(&channelSnapshot{
+		byModel: byModel,
+		byType:  byType,
+		all:     allChannels,
+		builtAt: time.Now(),
+	})
 
 	refreshDuration := time.Since(start)
 	if refreshDuration > 5*time.Second {
@@ -222,29 +174,34 @@ func (c *ChannelCache) refreshCache(ctx context.Context) error {
 	return nil
 }
 
-// InvalidateCache 手动失效缓存
+// InvalidateCache 手动失效缓存（把 builtAt 置零，下次读触发刷新）
 func (c *ChannelCache) InvalidateCache() {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	c.lastUpdate = time.Time{} // 重置为0时间，强制刷新
+	c.snapshot.Store(&channelSnapshot{
+		byModel: make(map[string][]*modelpkg.Config),
+		byType:  make(map[string][]*modelpkg.Config),
+		all:     make([]*modelpkg.Config, 0),
+		builtAt: time.Time{},
+	})
 }
+
+// ============================================================================
+// API Key 缓存（不走 COW，写频率更高）
+// ============================================================================
 
 // GetAPIKeys 缓存优先的API Keys查询
 func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*modelpkg.APIKey, error) {
-	// 检查缓存
-	c.mutex.RLock()
+	c.apiKeysMu.RLock()
 	if keys, exists := c.apiKeysByChannelID[channelID]; exists {
-		c.mutex.RUnlock()
+		c.apiKeysMu.RUnlock()
 		// 深拷贝: 防止调用方修改污染缓存
 		result := make([]*modelpkg.APIKey, len(keys))
 		for i, key := range keys {
-			keyCopy := *key // 拷贝对象本身
+			keyCopy := *key
 			result[i] = &keyCopy
 		}
 		return result, nil
 	}
-	c.mutex.RUnlock()
+	c.apiKeysMu.RUnlock()
 
 	// 缓存未命中，从数据库加载
 	keys, err := c.store.GetAPIKeys(ctx, channelID)
@@ -252,43 +209,43 @@ func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*mode
 		return nil, err
 	}
 
-	// 存储到缓存（只存 slice 本身；对外总是返回深拷贝，避免污染缓存）
-	c.mutex.Lock()
+	c.apiKeysMu.Lock()
 	c.apiKeysByChannelID[channelID] = keys
-	c.mutex.Unlock()
+	c.apiKeysMu.Unlock()
 
+	// 返回拷贝
 	result := make([]*modelpkg.APIKey, len(keys))
 	for i, key := range keys {
-		keyCopy := *key // 拷贝对象本身
+		keyCopy := *key
 		result[i] = &keyCopy
 	}
 	return result, nil
 }
 
+// ============================================================================
+// 冷却缓存
+// ============================================================================
+
 // GetAllChannelCooldowns 缓存优先的渠道冷却查询
 func (c *ChannelCache) GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
-	// 检查冷却缓存是否有效
-	c.mutex.RLock()
+	c.cooldownMu.RLock()
 	if time.Since(c.cooldownCache.channelsLastUpdate) <= c.cooldownCache.ttl {
-		// 有效缓存，返回副本
 		result := make(map[int64]time.Time, len(c.cooldownCache.channels))
 		maps.Copy(result, c.cooldownCache.channels)
-		c.mutex.RUnlock()
+		c.cooldownMu.RUnlock()
 		return result, nil
 	}
-	c.mutex.RUnlock()
+	c.cooldownMu.RUnlock()
 
-	// 缓存过期，从数据库加载
 	cooldowns, err := c.store.GetAllChannelCooldowns(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 存到缓存；对外总是返回副本，避免调用方修改污染缓存。
-	c.mutex.Lock()
+	c.cooldownMu.Lock()
 	c.cooldownCache.channels = cooldowns
 	c.cooldownCache.channelsLastUpdate = time.Now()
-	c.mutex.Unlock()
+	c.cooldownMu.Unlock()
 
 	result := make(map[int64]time.Time, len(cooldowns))
 	maps.Copy(result, cooldowns)
@@ -297,32 +254,28 @@ func (c *ChannelCache) GetAllChannelCooldowns(ctx context.Context) (map[int64]ti
 
 // GetAllKeyCooldowns 缓存优先的Key冷却查询
 func (c *ChannelCache) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error) {
-	// 检查冷却缓存是否有效
-	c.mutex.RLock()
+	c.cooldownMu.RLock()
 	if time.Since(c.cooldownCache.keysLastUpdate) <= c.cooldownCache.ttl {
-		// 有效缓存，返回副本
 		result := make(map[int64]map[int]time.Time)
 		for k, v := range c.cooldownCache.keys {
 			keyMap := make(map[int]time.Time)
 			maps.Copy(keyMap, v)
 			result[k] = keyMap
 		}
-		c.mutex.RUnlock()
+		c.cooldownMu.RUnlock()
 		return result, nil
 	}
-	c.mutex.RUnlock()
+	c.cooldownMu.RUnlock()
 
-	// 缓存过期，从数据库加载
 	cooldowns, err := c.store.GetAllKeyCooldowns(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 存到缓存；对外总是返回深拷贝，避免调用方修改污染缓存。
-	c.mutex.Lock()
+	c.cooldownMu.Lock()
 	c.cooldownCache.keys = cooldowns
 	c.cooldownCache.keysLastUpdate = time.Now()
-	c.mutex.Unlock()
+	c.cooldownMu.Unlock()
 
 	result := make(map[int64]map[int]time.Time, len(cooldowns))
 	for k, v := range cooldowns {
@@ -335,22 +288,22 @@ func (c *ChannelCache) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[in
 
 // InvalidateAPIKeysCache 手动失效API Keys缓存
 func (c *ChannelCache) InvalidateAPIKeysCache(channelID int64) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.apiKeysMu.Lock()
+	defer c.apiKeysMu.Unlock()
 	delete(c.apiKeysByChannelID, channelID)
 }
 
 // InvalidateAllAPIKeysCache 清空所有API Key缓存（批量操作后使用）
 func (c *ChannelCache) InvalidateAllAPIKeysCache() {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.apiKeysMu.Lock()
+	defer c.apiKeysMu.Unlock()
 	c.apiKeysByChannelID = make(map[int64][]*modelpkg.APIKey)
 }
 
 // InvalidateCooldownCache 手动失效冷却缓存
 func (c *ChannelCache) InvalidateCooldownCache() {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.cooldownMu.Lock()
+	defer c.cooldownMu.Unlock()
 	c.cooldownCache.channelsLastUpdate = time.Time{}
 	c.cooldownCache.keysLastUpdate = time.Time{}
 }

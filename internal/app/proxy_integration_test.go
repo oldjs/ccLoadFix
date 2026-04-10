@@ -748,7 +748,9 @@ func TestProxy_ModelNotAllowed_Returns403(t *testing.T) {
 	// 限制 token 只能使用 gpt-3.5-turbo
 	tokenHash := model.HashToken("test-api-key")
 	env.server.authService.authTokensMux.Lock()
-	env.server.authService.authTokenModels[tokenHash] = []string{"gpt-3.5-turbo"}
+	if td, ok := env.server.authService.authTokens[tokenHash]; ok {
+		td.allowedModels = []string{"gpt-3.5-turbo"}
+	}
 	env.server.authService.authTokensMux.Unlock()
 
 	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
@@ -776,9 +778,9 @@ func TestProxy_CostLimitExceeded_Returns429(t *testing.T) {
 	// 设置 token 费用已超限
 	tokenHash := model.HashToken("test-api-key")
 	env.server.authService.authTokensMux.Lock()
-	env.server.authService.authTokenCostLimits[tokenHash] = tokenCostLimit{
-		usedMicroUSD:  200_000, // $0.20
-		limitMicroUSD: 100_000, // $0.10 限额
+	if td, ok := env.server.authService.authTokens[tokenHash]; ok {
+		td.usedMicroUSD = 200_000  // $0.20
+		td.limitMicroUSD = 100_000 // $0.10 限额
 	}
 	env.server.authService.authTokensMux.Unlock()
 

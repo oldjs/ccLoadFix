@@ -63,8 +63,8 @@ func TestAuthService_IsModelAllowed(t *testing.T) {
 	t.Parallel()
 
 	s := &AuthService{
-		authTokenModels: map[string][]string{
-			"t1": {"GPT-4", "claude"},
+		authTokens: map[string]*authTokenData{
+			"t1": {allowedModels: []string{"GPT-4", "claude"}},
 		},
 	}
 
@@ -83,7 +83,7 @@ func TestAuthService_CostLimit(t *testing.T) {
 	t.Parallel()
 
 	s := &AuthService{
-		authTokenCostLimits: map[string]tokenCostLimit{
+		authTokens: map[string]*authTokenData{
 			"t1": {usedMicroUSD: 50, limitMicroUSD: 100},
 			"t0": {usedMicroUSD: 50, limitMicroUSD: 0},
 		},

@@ -554,7 +554,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 	}
 	entry := &model.LogEntry{
 		Time:        model.JSONTime{Time: logTime},
-		Model:       p.RequestModel,
+		Model:       util.InternString(p.RequestModel),
 		ChannelID:   p.ChannelID,
 		StatusCode:  p.StatusCode,
 		Duration:    p.Duration,
@@ -562,12 +562,12 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		APIKeyUsed:  p.APIKeyUsed,
 		AuthTokenID: p.AuthTokenID,
 		ClientIP:    p.ClientIP,
-		BaseURL:     p.BaseURL,
+		BaseURL:     util.InternString(p.BaseURL),
 	}
 
 	// 记录实际转发的模型（仅当发生重定向时）
 	if p.ActualModel != "" && p.ActualModel != p.RequestModel {
-		entry.ActualModel = p.ActualModel
+		entry.ActualModel = util.InternString(p.ActualModel)
 	}
 
 	if p.ErrMsg != "" {
@@ -617,7 +617,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		entry.CacheCreationInputTokens = res.CacheCreationInputTokens
 		entry.Cache5mInputTokens = res.Cache5mInputTokens
 		entry.Cache1hInputTokens = res.Cache1hInputTokens
-		entry.ServiceTier = res.ServiceTier
+		entry.ServiceTier = util.InternString(res.ServiceTier)
 
 		// 成本计算（2025-11新增，基于token统计）
 		// 2025-12更新：使用CalculateCostDetailed支持5m和1h缓存分别计费

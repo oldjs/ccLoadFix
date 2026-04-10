@@ -41,17 +41,19 @@ const (
 	HTTPTLSHandshakeTimeout = 10 * time.Second
 
 	// HTTPMaxIdleConns 全局空闲连接池大小
-	HTTPMaxIdleConns = 200
+	// 80：降低空闲连接内存占用（每个 HTTPS idle ~20KB），适合小 VPS
+	HTTPMaxIdleConns = 80
 
 	// HTTPMaxIdleConnsPerHost 单host空闲连接数
-	// 20：允许更多连接复用，减少连接建立延迟
-	HTTPMaxIdleConnsPerHost = 20
+	// 8：减少每个上游的空闲连接保有量
+	HTTPMaxIdleConnsPerHost = 8
 
 	// HTTPMaxConnsPerHost 单host最大连接数
-	HTTPMaxConnsPerHost = 50
+	HTTPMaxConnsPerHost = 20
 
 	// TLSSessionCacheSize TLS会话缓存大小
-	TLSSessionCacheSize = 1024
+	// 256：减少 TLS session 内存（~500B/条）
+	TLSSessionCacheSize = 256
 )
 
 // 日志系统配置常量

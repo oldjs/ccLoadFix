@@ -26,6 +26,9 @@ const (
 	SSEProbeSize = 2 * 1024
 )
 
+// peekBufPool 软错误检测的 512 字节 peek buffer 池
+var peekBufPool = sync.Pool{New: func() any { b := make([]byte, 512); return &b }}
+
 // prependedBody 将已读取的前缀数据与原始Body合并，保留原Closer
 type prependedBody struct {
 	io.Reader
@@ -363,7 +366,9 @@ func (s *Server) handleResponse(
 	_ string,
 	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
-	hdrClone := resp.Header.Clone()
+	// 直接引用 resp.Header（不做 Clone），省去每请求 ~2KB 的 map 拷贝
+	// 安全原因：没有代码修改上游响应头，且 fwResult 生命周期内 resp 仍存活
+	hdrClone := resp.Header
 
 	// 首字节响应时间（秒）：以第一次从 resp.Body 读到 n>0 的时刻为准。
 	// 流式请求：该时刻同时用于停止 firstByteTimeout。
@@ -398,9 +403,9 @@ func (s *Server) handleResponse(
 		!reqCtx.isStreaming &&
 		shouldCheckSoftErrorForChannelType(channelType) &&
 		(strings.Contains(ct, "text/plain") || strings.Contains(ct, "application/json")) {
-		// 预读 512 字节进行检测
-		peekSize := 512
-		buf := make([]byte, peekSize)
+		// 预读 512 字节进行检测（从池中取，用完放回）
+		bp := peekBufPool.Get().(*[]byte)
+		buf := *bp
 		// 使用 Read 读取一次（非阻塞等待填满），避免流式响应强制等待 512 字节导致首字延迟
 		// 之前的 io.ReadFull 会导致 stream 必须积累 2-3 秒数据才返回，这是不可接受的
 		n, err := resp.Body.Read(buf)
@@ -409,7 +414,11 @@ func (s *Server) handleResponse(
 			log.Printf("[WARN] 软错误检测读取失败: %v", err)
 		}
 
-		validData := buf[:n]
+		// validData 是 buf 的 slice，prepend 时会被 bytes.NewReader 复制，所以池化安全
+		validData := make([]byte, n)
+		copy(validData, buf[:n])
+		peekBufPool.Put(bp) // 归还 buffer 到池
+
 		if n > 0 && checkSoftError(validData, ct) {
 			// 检测到软错误！
 			log.Printf("[WARN] [软错误检测] 渠道ID=%d, 响应200但疑似错误响应: %s", cfg.ID, truncateErr(safeBodyToString(validData)))

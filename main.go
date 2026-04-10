@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -81,6 +82,17 @@ func getTrustedProxies() []string {
 }
 
 func main() {
+	// GC 调优：用 CPU 换内存，适合 1GB 小 VPS
+	// GOMEMLIMIT 限制 Go 堆上限，防止被 OOM killer 杀掉
+	// GOGC=50 让 GC 更频繁回收（默认100=堆翻倍才GC），牺牲 ~5% CPU 换更低内存水位
+	// 环境变量 GOMEMLIMIT / GOGC 优先（用户可覆盖）
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(700 * 1024 * 1024) // 700 MiB
+	}
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(50)
+	}
+
 	// 打印启动 Banner
 	version.PrintBanner()
 

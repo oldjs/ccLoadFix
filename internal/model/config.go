@@ -100,6 +100,11 @@ func (c *Config) GetURLs() []string {
 	return urls
 }
 
+// PreBuildIndex 在缓存刷新时预构建索引，避免请求路径上的写锁竞争
+func (c *Config) PreBuildIndex() {
+	c.buildIndexIfNeeded()
+}
+
 // buildIndexIfNeeded 懒加载构建模型查找索引（性能优化：O(n) → O(1)）
 // 使用双重检查锁定（DCL）模式保证并发安全
 func (c *Config) buildIndexIfNeeded() {

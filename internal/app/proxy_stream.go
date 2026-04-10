@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sync"
 )
 
 // ============================================================================
@@ -50,8 +51,23 @@ func (r *firstByteDetector) Read(p []byte) (n int, err error) {
 // 流式传输核心函数
 // ============================================================================
 
+// 流式 buffer 池：复用 32KB / 4KB 缓冲区，减少 GC 压力
+var streamBufPool32K = sync.Pool{New: func() any { b := make([]byte, 32*1024); return &b }}
+var streamBufPool4K = sync.Pool{New: func() any { b := make([]byte, 4*1024); return &b }}
+
+// getStreamBufPool 根据 bufSize 选池
+func getStreamBufPool(bufSize int) *sync.Pool {
+	if bufSize <= 4*1024 {
+		return &streamBufPool4K
+	}
+	return &streamBufPool32K
+}
+
 func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.ResponseWriter, onData func([]byte) error, bufSize int) error {
-	buf := make([]byte, bufSize)
+	pool := getStreamBufPool(bufSize)
+	bp := pool.Get().(*[]byte)
+	buf := *bp
+	defer pool.Put(bp)
 	for {
 		select {
 		case <-ctx.Done():

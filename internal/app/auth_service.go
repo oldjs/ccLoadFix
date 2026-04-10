@@ -36,12 +36,9 @@ type AuthService struct {
 	tokensMux    sync.RWMutex         // 并发保护
 
 	// API 认证（代理 API 使用的数据库令牌）
-	// [FIX] 2025-12: 存储过期时间而非bool，支持懒惰过期校验
-	authTokens          map[string]int64          // Token哈希 → 过期时间(Unix毫秒，0=永不过期)
-	authTokenIDs        map[string]int64          // Token哈希 → Token ID 映射（用于日志记录，2025-12新增）
-	authTokenModels     map[string][]string       // Token哈希 → 允许的模型列表（2026-01新增）
-	authTokenCostLimits map[string]tokenCostLimit // Token哈希 → 费用限额状态（仅限额>0的令牌）
-	authTokensMux       sync.RWMutex              // 并发保护（支持热更新）
+	// 合并为单 map，减少 4 次 map lookup → 1 次，提升 cache locality
+	authTokens    map[string]*authTokenData // Token哈希 → 令牌完整数据
+	authTokensMux sync.RWMutex             // 并发保护（支持热更新）
 
 	// 数据库依赖（用于热更新令牌）
 	store storage.Store
@@ -57,9 +54,15 @@ type AuthService struct {
 	closeOnce sync.Once
 }
 
-type tokenCostLimit struct {
-	usedMicroUSD  int64
-	limitMicroUSD int64
+// authTokenData 单个 API 令牌的完整内存数据
+// 合并原来的 4 张 map（authTokens/authTokenIDs/authTokenModels/authTokenCostLimits）
+// 减少 map 开销、key 重复存储，提升 cache locality
+type authTokenData struct {
+	expiresAt     int64    // Unix毫秒，0=永不过期
+	id            int64    // Token ID（用于日志）
+	allowedModels []string // 允许的模型列表（nil=无限制）
+	usedMicroUSD  int64    // 已消耗费用（微美元）
+	limitMicroUSD int64    // 费用限额（微美元，0=无限额）
 }
 
 // NewAuthService 创建认证服务实例
@@ -76,15 +79,13 @@ func NewAuthService(
 	}
 
 	s := &AuthService{
-		passwordHash:        passwordHash,
-		validTokens:         make(map[string]time.Time),
-		authTokens:          make(map[string]int64),
-		authTokenIDs:        make(map[string]int64),
-		authTokenCostLimits: make(map[string]tokenCostLimit),
-		loginRateLimiter:    loginRateLimiter,
-		store:               store,
-		lastUsedCh:          make(chan string, 256), // 带缓冲，避免阻塞请求
-		done:                make(chan struct{}),
+		passwordHash:     passwordHash,
+		validTokens:      make(map[string]time.Time),
+		authTokens:       make(map[string]*authTokenData),
+		loginRateLimiter: loginRateLimiter,
+		store:            store,
+		lastUsedCh:       make(chan string, 256),
+		done:             make(chan struct{}),
 	}
 
 	// 启动 last_used_at 更新 worker
@@ -316,17 +317,16 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 			return
 		}
 
-		// 双路径验证：先尝试直接匹配（客户端发送的是hash值），再尝试SHA256匹配（客户端发送的是明文）
+		// 双路径验证：先尝试直接匹配（hash），再尝试 SHA256 匹配（明文）
 		s.authTokensMux.RLock()
 		var tokenHash string
-		expiresAt, exists := s.authTokens[token]
+		td, exists := s.authTokens[token]
 		if exists {
 			tokenHash = token
 		} else {
 			tokenHash = model.HashToken(token)
-			expiresAt, exists = s.authTokens[tokenHash]
+			td, exists = s.authTokens[tokenHash]
 		}
-		tokenID, hasTokenID := s.authTokenIDs[tokenHash]
 		s.authTokensMux.RUnlock()
 
 		if !exists {
@@ -335,12 +335,11 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 			return
 		}
 
-		// [FIX] 过期校验：expiresAt > 0 表示有过期时间，检查是否已过期
-		if expiresAt > 0 && time.Now().UnixMilli() > expiresAt {
-			// 懒惰剔除：过期时从内存中移除（避免下次还要检查）
+		// 过期校验
+		if td.expiresAt > 0 && time.Now().UnixMilli() > td.expiresAt {
+			// 懒惰剔除
 			s.authTokensMux.Lock()
 			delete(s.authTokens, tokenHash)
-			delete(s.authTokenIDs, tokenHash)
 			s.authTokensMux.Unlock()
 
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "token expired"})
@@ -348,10 +347,10 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 			return
 		}
 
-		// 将tokenHash和tokenID存储到context，供后续统计使用（2025-11新增tokenHash, 2025-12新增tokenID）
+		// 将 tokenHash 和 tokenID 存到 context
 		c.Set("token_hash", tokenHash)
-		if hasTokenID {
-			c.Set("token_id", tokenID)
+		if td.id > 0 {
+			c.Set("token_id", td.id)
 		}
 
 		// 异步更新last_used_at（发送到受控worker，不阻塞请求）
@@ -490,39 +489,32 @@ func (s *AuthService) ReloadAuthTokens() error {
 		return fmt.Errorf("reload auth tokens: %w", err)
 	}
 
-	// 构建新的令牌映射（存储过期时间而非bool）
-	newTokens := make(map[string]int64, len(tokens))
-	newTokenIDs := make(map[string]int64, len(tokens))
-	newTokenModels := make(map[string][]string, len(tokens))
-	newTokenCostLimits := make(map[string]tokenCostLimit, len(tokens))
+	// 构建新的令牌映射（单 map，所有字段合并到 authTokenData）
+	newTokens := make(map[string]*authTokenData, len(tokens))
 	for _, t := range tokens {
-		// ExpiresAt: nil → 0 (永不过期), *int64 → Unix毫秒
 		var expiresAt int64
 		if t.ExpiresAt != nil {
 			expiresAt = *t.ExpiresAt
 		}
-		newTokens[t.Token] = expiresAt
-		newTokenIDs[t.Token] = t.ID
-		// 只有有限制时才存储（节省内存）
+		td := &authTokenData{
+			expiresAt: expiresAt,
+			id:        t.ID,
+		}
+		// 只有有限制时才存储模型列表
 		if len(t.AllowedModels) > 0 {
-			newTokenModels[t.Token] = t.AllowedModels
+			td.allowedModels = t.AllowedModels
 		}
-		// 费用限额：只为“有限额”的令牌维护状态（避免无谓内存占用）
-		limitMicro := t.CostLimitMicroUSD
-		if limitMicro > 0 {
-			newTokenCostLimits[t.Token] = tokenCostLimit{
-				usedMicroUSD:  t.CostUsedMicroUSD,
-				limitMicroUSD: limitMicro,
-			}
+		// 费用限额
+		if t.CostLimitMicroUSD > 0 {
+			td.usedMicroUSD = t.CostUsedMicroUSD
+			td.limitMicroUSD = t.CostLimitMicroUSD
 		}
+		newTokens[t.Token] = td
 	}
 
-	// 原子替换（避免读写竞争）
+	// 原子替换
 	s.authTokensMux.Lock()
 	s.authTokens = newTokens
-	s.authTokenIDs = newTokenIDs
-	s.authTokenModels = newTokenModels
-	s.authTokenCostLimits = newTokenCostLimits
 	s.authTokensMux.Unlock()
 
 	return nil
@@ -530,17 +522,17 @@ func (s *AuthService) ReloadAuthTokens() error {
 
 // IsModelAllowed 检查令牌是否允许访问指定模型
 // 如果令牌没有模型限制，返回 true
-func (s *AuthService) IsModelAllowed(tokenHash, model string) bool {
+func (s *AuthService) IsModelAllowed(tokenHash, modelName string) bool {
 	s.authTokensMux.RLock()
-	allowedModels, hasRestriction := s.authTokenModels[tokenHash]
+	td, ok := s.authTokens[tokenHash]
 	s.authTokensMux.RUnlock()
 
-	if !hasRestriction {
-		return true // 无限制
+	if !ok || len(td.allowedModels) == 0 {
+		return true // 不存在或无限制
 	}
 
-	for _, m := range allowedModels {
-		if strings.EqualFold(m, model) {
+	for _, m := range td.allowedModels {
+		if strings.EqualFold(m, modelName) {
 			return true
 		}
 	}
@@ -548,31 +540,28 @@ func (s *AuthService) IsModelAllowed(tokenHash, model string) bool {
 }
 
 // IsCostLimitExceeded 检查令牌是否超过费用限额（微美元，整数比较）
-// 若令牌无限额/未启用限额：exceeded=false 且 used/limit=0
 func (s *AuthService) IsCostLimitExceeded(tokenHash string) (usedMicroUSD, limitMicroUSD int64, exceeded bool) {
 	s.authTokensMux.RLock()
-	v, ok := s.authTokenCostLimits[tokenHash]
+	td, ok := s.authTokens[tokenHash]
 	s.authTokensMux.RUnlock()
 
-	if !ok || v.limitMicroUSD <= 0 {
+	if !ok || td.limitMicroUSD <= 0 {
 		return 0, 0, false
 	}
 
-	return v.usedMicroUSD, v.limitMicroUSD, v.usedMicroUSD >= v.limitMicroUSD
+	return td.usedMicroUSD, td.limitMicroUSD, td.usedMicroUSD >= td.limitMicroUSD
 }
 
 // AddCostToCache 原子更新令牌的已消耗费用缓存
-// 仅更新内存缓存，数据库更新由 UpdateTokenStats 异步处理
 func (s *AuthService) AddCostToCache(tokenHash string, deltaMicroUSD int64) {
 	if deltaMicroUSD <= 0 {
 		return
 	}
 
 	s.authTokensMux.Lock()
-	v, ok := s.authTokenCostLimits[tokenHash]
-	if ok && v.limitMicroUSD > 0 {
-		v.usedMicroUSD += deltaMicroUSD
-		s.authTokenCostLimits[tokenHash] = v
+	td, ok := s.authTokens[tokenHash]
+	if ok && td.limitMicroUSD > 0 {
+		td.usedMicroUSD += deltaMicroUSD
 	}
 	s.authTokensMux.Unlock()
 }

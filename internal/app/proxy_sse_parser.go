@@ -73,9 +73,12 @@ const (
 // newSSEUsageParser 创建SSE usage解析器
 // channelType: 渠道类型(anthropic/openai/codex/gemini),用于精确识别平台usage格式
 func newSSEUsageParser(channelType string) *sseUsageParser {
-	return &sseUsageParser{
+	p := &sseUsageParser{
 		channelType: channelType,
+		dataLines:   make([]string, 0, 4), // 预分配，大部分 event 只有 1-3 个 data 行
 	}
+	p.buffer.Grow(4096) // 预分配 4KB，减少 bytes.Buffer 扩容次数
+	return p
 }
 
 // newJSONUsageParser 创建JSON响应的usage解析器
@@ -193,23 +196,36 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		return nil
 	}
 
-	// 解析JSON数据
+	// 快速预检：绝大多数 SSE 事件（content delta 等）不含 usage/service_tier
+	// 跳过这些事件的 JSON 解析，减少 ~90% 的反序列化开销
+	hasUsage := strings.Contains(data, "usage") || strings.Contains(data, "usageMetadata")
+	hasTier := strings.Contains(data, "service_tier")
+	if !hasUsage && !hasTier {
+		return nil
+	}
+
+	// 只有可能含 usage 或 service_tier 的事件才做完整解析
 	var event map[string]any
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
 		return fmt.Errorf("json unmarshal failed: %w", err)
 	}
 
 	// 提取 service_tier（OpenAI Chat/Responses API 顶层字段）
-	if tier, ok := event["service_tier"].(string); ok && tier != "" {
-		p.ServiceTier = tier
-	} else if resp, ok := event["response"].(map[string]any); ok {
-		if tier, ok := resp["service_tier"].(string); ok && tier != "" {
+	if hasTier {
+		if tier, ok := event["service_tier"].(string); ok && tier != "" {
 			p.ServiceTier = tier
+		} else if resp, ok := event["response"].(map[string]any); ok {
+			if tier, ok := resp["service_tier"].(string); ok && tier != "" {
+				p.ServiceTier = tier
+			}
 		}
 	}
 
-	usage := extractUsage(event)
+	if !hasUsage {
+		return nil
+	}
 
+	usage := extractUsage(event)
 	if usage == nil {
 		return nil
 	}
