@@ -777,6 +777,7 @@ python manage.py -t all --download-only
 | `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | 混合存储模式开关（`1`=启用，见下方说明） |
 | `CCLOAD_SQLITE_LOG_DAYS` | `7` | 混合模式启动时从 MySQL 恢复日志的天数（-1=全量，0=不恢复日志） |
 | `CCLOAD_ALLOW_INSECURE_TLS` | `0` | 禁用上游 TLS 证书校验（`1`=启用；⚠️仅用于临时排障/受控内网环境） |
+| `CCLOAD_AUTH_TOKENS` | 无 | 运行时默认 API 访问令牌列表（仅内存生效，不落库；支持逗号、分号或换行分隔多个令牌） |
 | `PORT` | `8080` | 服务端口 |
 | `GIN_MODE` | `release` | 运行模式（`debug`/`release`） |
 | `GIN_LOG` | `true` | Gin 访问日志开关（`false`/`0`/`no`/`off` 关闭） |
@@ -861,12 +862,23 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 
 #### API 访问令牌配置
 
-**划重点**：API令牌现在在Web界面管理，不用改环境变量了👇
+**默认还是 Web 管理为主**，但现在也支持用环境变量塞一组运行时默认令牌，方便迁移和容器编排👇
 
 - 访问 `http://localhost:8080/web/tokens.html` 进行令牌管理
 - 支持添加、删除、查看令牌
 - 所有令牌存储在数据库中，支持持久化
-- 未配置任何令牌时，所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`
+- 可选环境变量：`CCLOAD_AUTH_TOKENS=token-a,token-b`
+- 环境变量令牌只在内存里生效，不会写入 `auth_tokens` 表，也不会出现在 Web 管理页
+- 数据库令牌和环境变量令牌可以同时使用；如果两边碰巧是同一个令牌，数据库配置优先
+- 数据库和环境变量都没配置时，所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`
+
+```yaml
+services:
+  ccload:
+    environment:
+      CCLOAD_PASS: your_admin_password
+      CCLOAD_AUTH_TOKENS: token-a,token-b
+```
 
 **令牌高级功能**（2026-01新增）：
 - **费用限额**：为每个令牌设置费用上限（美元），超限后拒绝请求返回 429
@@ -878,7 +890,7 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 兄弟们注意这几条安全策略👇
 
 - 未设置 `CCLOAD_PASS`：程序启动失败并退出（安全第一）
-- 未配置 API 访问令牌：所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`，去Web界面 `/web/tokens.html` 配置令牌
+- 未配置 API 访问令牌：当数据库里也没有令牌且没设置 `CCLOAD_AUTH_TOKENS` 时，所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`
 - 公开端点：`GET /health`（健康检查）和 `GET /public/summary`（统计摘要）无需认证，其他都要授权
 
 ### Docker 镜像

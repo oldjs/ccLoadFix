@@ -114,6 +114,37 @@ func TestRequireAPIAuth_NoConfiguredTokens(t *testing.T) {
 	}
 }
 
+func TestRequireAPIAuth_DefaultEnvToken(t *testing.T) {
+	t.Parallel()
+	svc := newTestAuthService(t)
+	svc.defaultAuthTokens[model.HashToken("env-token-1")] = &authTokenData{}
+	svc.authTokensMux.Lock()
+	svc.authTokens = map[string]*authTokenData{
+		model.HashToken("env-token-1"): {},
+	}
+	svc.authTokensMux.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer env-token-1")
+
+	w := runMiddleware(t, svc.RequireAPIAuth(), req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if len(svc.lastUsedCh) != 0 {
+		t.Fatal("expected runtime-only env token to skip last_used_at queue")
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if _, ok := resp["token_id"]; ok {
+		t.Fatalf("expected runtime-only env token to have no token_id, got %v", resp["token_id"])
+	}
+}
+
 func TestRequireAPIAuth_ExpiredToken(t *testing.T) {
 	t.Parallel()
 	svc := newTestAuthService(t)
@@ -358,5 +389,20 @@ func TestRequireAPIAuth_TokenPriority(t *testing.T) {
 	w := runMiddleware(t, svc.RequireAPIAuth(), req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 (Bearer should take priority), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestLoadDefaultAuthTokensFromEnv(t *testing.T) {
+	t.Setenv(envDefaultAuthTokens, " token-a , token-b\n token-a ;; token-c ")
+
+	tokens := loadDefaultAuthTokensFromEnv()
+	if len(tokens) != 3 {
+		t.Fatalf("expected 3 unique tokens, got %d", len(tokens))
+	}
+
+	for _, token := range []string{"token-a", "token-b", "token-c"} {
+		if _, ok := tokens[model.HashToken(token)]; !ok {
+			t.Fatalf("expected token %s to be loaded", token)
+		}
 	}
 }

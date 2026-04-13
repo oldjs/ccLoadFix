@@ -97,7 +97,7 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	log.Printf("[INFO] 管理员密码已从环境变量加载（长度: %d 字符）", len(password))
-	log.Print("[INFO] API访问令牌将从数据库动态加载（支持Web界面管理）")
+	log.Print("[INFO] API访问令牌将从数据库动态加载；如设置 CCLOAD_AUTH_TOKENS，会额外加载仅运行时生效的默认令牌")
 
 	// 从ConfigService读取运行时配置（启动时加载一次，修改后重启生效）
 	maxKeyRetries := configService.GetInt("max_key_retries", config.DefaultMaxKeyRetries)

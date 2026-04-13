@@ -139,10 +139,11 @@ func mustUnmarshalAPIResponseData(t testing.TB, body []byte, out any) {
 func newTestAuthService(t testing.TB) *AuthService {
 	t.Helper()
 	s := &AuthService{
-		authTokens:  make(map[string]*authTokenData),
-		validTokens: make(map[string]time.Time),
-		lastUsedCh:  make(chan string, 256),
-		done:        make(chan struct{}),
+		authTokens:        make(map[string]*authTokenData),
+		defaultAuthTokens: make(map[string]*authTokenData),
+		validTokens:       make(map[string]time.Time),
+		lastUsedCh:        make(chan string, 256),
+		done:              make(chan struct{}),
 	}
 	t.Cleanup(s.Close) // 幂等关闭（closeOnce 保护）
 	return s

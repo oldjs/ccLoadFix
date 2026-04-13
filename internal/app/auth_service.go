@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -37,8 +38,9 @@ type AuthService struct {
 
 	// API 认证（代理 API 使用的数据库令牌）
 	// 合并为单 map，减少 4 次 map lookup → 1 次，提升 cache locality
-	authTokens    map[string]*authTokenData // Token哈希 → 令牌完整数据
-	authTokensMux sync.RWMutex             // 并发保护（支持热更新）
+	authTokens        map[string]*authTokenData // Token哈希 → 令牌完整数据
+	defaultAuthTokens map[string]*authTokenData // 环境变量默认令牌，只放内存不落库
+	authTokensMux     sync.RWMutex              // 并发保护（支持热更新）
 
 	// 数据库依赖（用于热更新令牌）
 	store storage.Store
@@ -65,6 +67,38 @@ type authTokenData struct {
 	limitMicroUSD int64    // 费用限额（微美元，0=无限额）
 }
 
+const envDefaultAuthTokens = "CCLOAD_AUTH_TOKENS"
+
+func loadDefaultAuthTokensFromEnv() map[string]*authTokenData {
+	raw := strings.TrimSpace(os.Getenv(envDefaultAuthTokens))
+	if raw == "" {
+		return nil
+	}
+
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r'
+	})
+	if len(parts) == 0 {
+		return nil
+	}
+
+	tokens := make(map[string]*authTokenData, len(parts))
+	for _, part := range parts {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			continue
+		}
+
+		// 这里统一转成 hash，内存里不留明文。
+		tokens[model.HashToken(token)] = &authTokenData{}
+	}
+
+	if len(tokens) == 0 {
+		return nil
+	}
+	return tokens
+}
+
 // NewAuthService 创建认证服务实例
 // 初始化时自动从数据库加载API访问令牌和管理员会话
 func NewAuthService(
@@ -79,13 +113,17 @@ func NewAuthService(
 	}
 
 	s := &AuthService{
-		passwordHash:     passwordHash,
-		validTokens:      make(map[string]time.Time),
-		authTokens:       make(map[string]*authTokenData),
-		loginRateLimiter: loginRateLimiter,
-		store:            store,
-		lastUsedCh:       make(chan string, 256),
-		done:             make(chan struct{}),
+		passwordHash:      passwordHash,
+		validTokens:       make(map[string]time.Time),
+		authTokens:        make(map[string]*authTokenData),
+		defaultAuthTokens: loadDefaultAuthTokensFromEnv(),
+		loginRateLimiter:  loginRateLimiter,
+		store:             store,
+		lastUsedCh:        make(chan string, 256),
+		done:              make(chan struct{}),
+	}
+	if count := len(s.defaultAuthTokens); count > 0 {
+		log.Printf("[INFO] 已从环境变量 %s 加载 %d 个默认API访问令牌（仅运行时生效，不落库）", envDefaultAuthTokens, count)
 	}
 
 	// 启动 last_used_at 更新 worker
@@ -353,11 +391,13 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 			c.Set("token_id", td.id)
 		}
 
-		// 异步更新last_used_at（发送到受控worker，不阻塞请求）
-		select {
-		case s.lastUsedCh <- tokenHash:
-		default:
-			// channel满时丢弃，避免阻塞（last_used_at非关键数据）
+		// 环境变量令牌没有数据库记录，这里别往落库队列里塞。
+		if td.id > 0 {
+			select {
+			case s.lastUsedCh <- tokenHash:
+			default:
+				// channel满时丢弃，避免阻塞（last_used_at非关键数据）
+			}
 		}
 
 		c.Next()
@@ -489,8 +529,8 @@ func (s *AuthService) ReloadAuthTokens() error {
 		return fmt.Errorf("reload auth tokens: %w", err)
 	}
 
-	// 构建新的令牌映射（单 map，所有字段合并到 authTokenData）
-	newTokens := make(map[string]*authTokenData, len(tokens))
+	// 先装数据库令牌，再补环境变量默认令牌；同名时数据库优先。
+	newTokens := make(map[string]*authTokenData, len(tokens)+len(s.defaultAuthTokens))
 	for _, t := range tokens {
 		var expiresAt int64
 		if t.ExpiresAt != nil {
@@ -510,6 +550,14 @@ func (s *AuthService) ReloadAuthTokens() error {
 			td.limitMicroUSD = t.CostLimitMicroUSD
 		}
 		newTokens[t.Token] = td
+	}
+	for tokenHash, td := range s.defaultAuthTokens {
+		if _, exists := newTokens[tokenHash]; exists {
+			continue
+		}
+
+		clone := *td
+		newTokens[tokenHash] = &clone
 	}
 
 	// 原子替换
