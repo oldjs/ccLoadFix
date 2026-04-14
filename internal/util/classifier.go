@@ -18,6 +18,9 @@ import (
 // ErrUpstreamFirstByteTimeout 是上游首字节超时的统一错误标识，避免依赖具体报错文案。
 var ErrUpstreamFirstByteTimeout = errors.New("upstream first byte timeout")
 
+// ErrUpstreamReadIdleTimeout 流传输中段读取空闲超时：首字节已到达，但后续数据中断超过阈值
+var ErrUpstreamReadIdleTimeout = errors.New("upstream read idle timeout")
+
 // resetTime1308Regex 匹配1308错误 message 中的重置时间（不依赖具体语言文案）
 // 格式示例: 2025-12-09 18:08:11
 var resetTime1308Regex = regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}`)
@@ -495,6 +498,11 @@ func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetr
 	// 快速路径1：专门识别上游首字节超时，优先切换渠道
 	if errors.Is(err, ErrUpstreamFirstByteTimeout) {
 		return StatusFirstByteTimeout, ErrorLevelChannel, true
+	}
+
+	// 快速路径1b：流传输中段读取空闲超时（首字节已到但后续数据中断）
+	if errors.Is(err, ErrUpstreamReadIdleTimeout) {
+		return StatusStreamIncomplete, ErrorLevelChannel, true
 	}
 
 	// 快速路径2：处理客户端主动取消

@@ -16,6 +16,11 @@ type requestContext struct {
 	isStreaming       bool
 	firstByteTimer    *time.Timer
 	firstByteTimedOut atomic.Bool
+	// 流传输中段读取空闲定时器：首字节到达后启动，每次收到数据重置
+	// 超过阈值无数据 → 判定流卡死 → cancel context → 关闭body打断阻塞Read
+	readIdleTimer    *time.Timer
+	readIdleTimedOut atomic.Bool
+	readIdleTimeout  time.Duration // 存下来给 Reset 用
 }
 
 // newRequestContext 创建请求上下文（处理超时控制）
@@ -69,6 +74,30 @@ func (rc *requestContext) firstByteTimeoutTriggered() bool {
 	return rc.firstByteTimedOut.Load()
 }
 
+// startReadIdleTimer 在首字节到达后启动读取空闲定时器
+// 到期时设置标志 + cancel context → AfterFunc 关闭 body → 打断阻塞的 Read
+func (rc *requestContext) startReadIdleTimer(timeout time.Duration) {
+	if timeout <= 0 {
+		return
+	}
+	rc.readIdleTimeout = timeout
+	rc.readIdleTimer = time.AfterFunc(timeout, func() {
+		rc.readIdleTimedOut.Store(true)
+		rc.cancel()
+	})
+}
+
+// resetReadIdleTimer 每次从上游收到数据时重置定时器，重新计时
+func (rc *requestContext) resetReadIdleTimer() {
+	if rc.readIdleTimer != nil {
+		rc.readIdleTimer.Reset(rc.readIdleTimeout)
+	}
+}
+
+func (rc *requestContext) readIdleTimeoutTriggered() bool {
+	return rc.readIdleTimedOut.Load()
+}
+
 // Duration 返回从请求开始到现在的时间
 func (rc *requestContext) Duration() time.Duration {
 	return time.Since(rc.startTime)
@@ -78,5 +107,8 @@ func (rc *requestContext) Duration() time.Duration {
 // [INFO] 符合 Go 惯用法：defer reqCtx.cleanup() 一行搞定
 func (rc *requestContext) cleanup() {
 	rc.stopFirstByteTimer() // 停止首字节超时定时器
-	rc.cancel()             // 取消 context（总是非 nil，无需检查）
+	if rc.readIdleTimer != nil {
+		rc.readIdleTimer.Stop() // 停止读取空闲定时器
+	}
+	rc.cancel() // 取消 context（总是非 nil，无需检查）
 }

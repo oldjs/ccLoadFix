@@ -380,6 +380,8 @@ func (s *Server) handleResponse(
 		onFirstRead: func() {
 			if reqCtx.isStreaming {
 				reqCtx.stopFirstByteTimer()
+				// 首字节已到达，启动读取空闲定时器：后续连续N秒无数据 → 判定流卡死
+				reqCtx.startReadIdleTimer(s.streamReadIdleTimout)
 			}
 			if firstBodyReadTimeSec == 0 {
 				firstBodyReadTimeSec = reqCtx.Duration().Seconds()
@@ -389,6 +391,8 @@ func (s *Server) handleResponse(
 			}
 		},
 		onBytesRead: func(n int64) {
+			// 每次收到数据，重置读取空闲定时器（上游还活着，重新计时）
+			reqCtx.resetReadIdleTimer()
 			if observer != nil && observer.OnBytesRead != nil {
 				observer.OnBytesRead(n)
 			}
@@ -535,6 +539,17 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 		err = fmt.Errorf("%s: %w", timeoutMsg, util.ErrUpstreamFirstByteTimeout)
 		res.Status = util.StatusFirstByteTimeout
 		log.Printf("[TIMEOUT] [上游首字节超时-流传输中断] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, s.firstByteTimeout, duration)
+	}
+
+	// [FIX] 2026-04: 流传输中段读取空闲超时
+	// 场景：首字节已到达，流正常传输中，上游突然不发数据超过阈值（连接/流卡死）
+	// 此时 context.Canceled 被触发，但真正原因是 readIdleTimer，需要正确分类
+	// 用 599 (StreamIncomplete) 标识，触发渠道级冷却保护后续请求
+	if err != nil && reqCtx.readIdleTimeoutTriggered() {
+		timeoutMsg := fmt.Sprintf("upstream read idle timeout after %.2fs (threshold=%v)", duration, s.streamReadIdleTimout)
+		err = fmt.Errorf("%s: %w", timeoutMsg, util.ErrUpstreamReadIdleTimeout)
+		res.Status = util.StatusStreamIncomplete
+		log.Printf("[TIMEOUT] [流传输中段读取空闲超时] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, s.streamReadIdleTimout, duration)
 	}
 
 	return res, duration, err

@@ -20,6 +20,7 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/net/http2"
 )
 
 // Server 是 ccLoad 的核心HTTP服务器，负责代理请求转发和管理API
@@ -51,9 +52,10 @@ type Server struct {
 	tokenStatsDropCount atomic.Int64
 
 	// 运行时配置（启动时从数据库加载，修改后重启生效）
-	maxKeyRetries    int           // 单个渠道内最大Key重试次数
-	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
-	nonStreamTimeout time.Duration // 非流式请求超时
+	maxKeyRetries        int           // 单个渠道内最大Key重试次数
+	firstByteTimeout     time.Duration // 上游首字节超时（流式请求）
+	nonStreamTimeout     time.Duration // 非流式请求超时
+	streamReadIdleTimout time.Duration // 流传输中段读取空闲超时（首字节后）
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
 	modelFuzzyMatch bool // 未命中时启用模糊匹配（子串匹配+版本排序）
 
@@ -123,6 +125,16 @@ func NewServer(store storage.Store) *Server {
 		nonStreamTimeout = 120 * time.Second
 	}
 
+	streamReadIdleTimeout := configService.GetDuration("stream_read_idle_timeout", config.DefaultStreamReadIdleTimeout)
+	if streamReadIdleTimeout < 0 {
+		log.Printf("[WARN] 无效的 stream_read_idle_timeout=%v（必须 >= 0），已使用兜底值 %v", streamReadIdleTimeout, config.DefaultStreamReadIdleTimeout)
+		streamReadIdleTimeout = config.DefaultStreamReadIdleTimeout
+	}
+	if streamReadIdleTimeout == 0 {
+		streamReadIdleTimeout = config.DefaultStreamReadIdleTimeout
+		log.Printf("[INFO] stream_read_idle_timeout=0，已使用兜底值 %v 防止流式响应无限挂起", streamReadIdleTimeout)
+	}
+
 	logRetentionDays := configService.GetInt("log_retention_days", 7)
 
 	modelFuzzyMatch := configService.GetBool("model_fuzzy_match", false)
@@ -147,7 +159,7 @@ func NewServer(store storage.Store) *Server {
 
 	// 构建HTTP Transport（使用统一函数，消除DRY违反）
 	transport := buildHTTPTransport(skipTLSVerify)
-	log.Print("[INFO] HTTP/2已启用（头部压缩+多路复用，HTTPS自动协商）")
+	log.Print("[INFO] HTTP/2已启用（头部压缩+多路复用+PING探活，HTTPS自动协商）")
 
 	baseCtx, baseCancel := context.WithCancel(context.Background())
 
@@ -157,9 +169,10 @@ func NewServer(store storage.Store) *Server {
 		loginRateLimiter: util.NewLoginRateLimiter(),
 
 		// 运行时配置（启动时加载，修改后重启生效）
-		maxKeyRetries:    maxKeyRetries,
-		firstByteTimeout: firstByteTimeout,
-		nonStreamTimeout: nonStreamTimeout,
+		maxKeyRetries:        maxKeyRetries,
+		firstByteTimeout:     firstByteTimeout,
+		nonStreamTimeout:     nonStreamTimeout,
+		streamReadIdleTimout: streamReadIdleTimeout,
 		// 模型匹配配置（启动时加载，修改后重启生效）
 		modelFuzzyMatch: modelFuzzyMatch,
 
@@ -322,16 +335,17 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 	}
 
 	transport := &http.Transport{
-		Proxy:               http.ProxyFromEnvironment, // 支持 HTTPS_PROXY/HTTP_PROXY/NO_PROXY
-		MaxIdleConns:        config.HTTPMaxIdleConns,
-		MaxIdleConnsPerHost: config.HTTPMaxIdleConnsPerHost,
-		IdleConnTimeout:     90 * time.Second, // 空闲连接90秒后关闭，避免僵尸连接
-		MaxConnsPerHost:     config.HTTPMaxConnsPerHost,
-		DialContext:         dialer.DialContext,
-		TLSHandshakeTimeout: config.HTTPTLSHandshakeTimeout,
-		DisableCompression:  false,
-		DisableKeepAlives:   false,
-		ForceAttemptHTTP2:   true, // 启用标准库 HTTP/2（HTTPS 自动协商）
+		Proxy:                 http.ProxyFromEnvironment, // 支持 HTTPS_PROXY/HTTP_PROXY/NO_PROXY
+		MaxIdleConns:          config.HTTPMaxIdleConns,
+		MaxIdleConnsPerHost:   config.HTTPMaxIdleConnsPerHost,
+		IdleConnTimeout:       90 * time.Second, // 空闲连接90秒后关闭，避免僵尸连接
+		MaxConnsPerHost:       config.HTTPMaxConnsPerHost,
+		DialContext:           dialer.DialContext,
+		TLSHandshakeTimeout:  config.HTTPTLSHandshakeTimeout,
+		ResponseHeaderTimeout: 60 * time.Second, // 60s内拿不到响应头 → 直接关连接，不依赖context传播
+		DisableCompression:    false,
+		DisableKeepAlives:     false,
+		// 不用 ForceAttemptHTTP2，改用显式 http2.ConfigureTransports 拿到 h2 Transport 控制权
 		TLSClientConfig: &tls.Config{
 			ClientSessionCache: tls.NewLRUClientSessionCache(config.TLSSessionCacheSize),
 			MinVersion:         tls.VersionTLS12,
@@ -339,7 +353,19 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 		},
 	}
 
-	return transport // HTTP/2 已通过 ForceAttemptHTTP2 启用
+	// 显式配置 HTTP/2（替代 ForceAttemptHTTP2），拿到 h2 Transport 的控制权
+	// 关键：设置 ReadIdleTimeout + PingTimeout，主动探测死连接
+	// 场景：上游静默断开HTTP/2连接 → 30s无数据发PING → 15s无PONG判定死亡 → 关闭连接
+	// 没有这个配置时，死连接会一直留在池里，所有走它的请求全挂起
+	h2t, h2Err := http2.ConfigureTransports(transport)
+	if h2Err != nil {
+		log.Printf("[WARN] HTTP/2 配置失败，降级为 HTTP/1.1: %v", h2Err)
+	} else {
+		h2t.ReadIdleTimeout = 30 * time.Second // 连接上30s无数据 → 发PING帧探测
+		h2t.PingTimeout = 15 * time.Second     // PING发出15s无PONG → 判定连接死亡
+	}
+
+	return transport
 }
 
 // NOTE: 这些缓存fallback函数存在重复逻辑，可使用泛型重构（Go 1.18+）
