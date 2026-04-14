@@ -341,7 +341,7 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 		IdleConnTimeout:       90 * time.Second, // 空闲连接90秒后关闭，避免僵尸连接
 		MaxConnsPerHost:       config.HTTPMaxConnsPerHost,
 		DialContext:           dialer.DialContext,
-		TLSHandshakeTimeout:  config.HTTPTLSHandshakeTimeout,
+		TLSHandshakeTimeout:   config.HTTPTLSHandshakeTimeout,
 		ResponseHeaderTimeout: 60 * time.Second, // 60s内拿不到响应头 → 直接关连接，不依赖context传播
 		DisableCompression:    false,
 		DisableKeepAlives:     false,

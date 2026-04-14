@@ -17,10 +17,10 @@ import (
 // channelSnapshot COW 不可变快照，读操作直接返回引用（零拷贝）
 // 写操作原子替换整个快照，旧快照由 GC 回收
 type channelSnapshot struct {
-	byModel  map[string][]*modelpkg.Config // model → channels
-	byType   map[string][]*modelpkg.Config // type → channels
-	all      []*modelpkg.Config            // 所有渠道
-	builtAt  time.Time
+	byModel map[string][]*modelpkg.Config // model → channels
+	byType  map[string][]*modelpkg.Config // type → channels
+	all     []*modelpkg.Config            // 所有渠道
+	builtAt time.Time
 }
 
 // ChannelCache 高性能渠道缓存层
