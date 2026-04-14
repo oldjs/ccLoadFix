@@ -42,7 +42,7 @@ func TestPenalizeSlowTTFBMS_Boundaries(t *testing.T) {
 		{name: "negative", in: -10, want: defaultEffectiveLatencyMS},
 		{name: "nan", in: math.NaN(), want: defaultEffectiveLatencyMS},
 		{name: "exact 100", in: 100, want: 100},
-		{name: "below 100", in: 99, want: defaultEffectiveLatencyMS},
+		{name: "below 100", in: 99, want: 99}, // 低延迟URL不再被clamp到500ms
 		{name: "exact 1200", in: 1200, want: 2400},
 		{name: "exact 2500", in: 2500, want: 7500},
 		{name: "exact 4000", in: 4000, want: 20000},

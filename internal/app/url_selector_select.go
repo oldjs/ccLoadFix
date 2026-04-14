@@ -38,10 +38,12 @@ type selectorCandidate struct {
 }
 
 func normalizeSelectorLatencyMS(ms float64) float64 {
-	if ms <= 0 || math.IsNaN(ms) || math.IsInf(ms, 0) {
-		return defaultEffectiveLatencyMS
-	}
-	if ms < 100 {
+	// 无效值 → 当作未知（500ms默认）
+	// 地板1ms：正常HTTP请求不可能<1ms，低于此值说明测量异常
+	// [FIX] 2026-04: 原地板100ms导致所有低延迟URL被clamp到500ms，
+	// 反而比200ms的URL更"慢"——权重函数是 1/latency，500>200 意味着权重更低。
+	// 生产环境中低延迟本地代理、同机房URL都会被错误惩罚。
+	if ms < 1 || math.IsNaN(ms) || math.IsInf(ms, 0) {
 		return defaultEffectiveLatencyMS
 	}
 	return ms
