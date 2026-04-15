@@ -482,6 +482,9 @@ func (s *Server) GetWriteTimeout() time.Duration {
 
 // SetupRoutes - 新的路由设置函数，适配Gin
 func (s *Server) SetupRoutes(r *gin.Engine) {
+	// CORS 放最前面，OPTIONS 预检要跳过后面的 auth
+	r.Use(CORSMiddleware())
+
 	// 安全响应头（管理界面防护）
 	r.Use(func(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")
