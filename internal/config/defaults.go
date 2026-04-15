@@ -11,9 +11,9 @@ const (
 	DefaultFirstByteTimeout = 15 * time.Second
 
 	// DefaultStreamReadIdleTimeout 流传输中段读取空闲超时：首字节到达后，连续多久没收到数据就判定流卡死。
-	// 15秒：正常SSE流每50-200ms出token，即使thinking模式也会发thinking事件；
-	// 15秒完全无数据几乎一定是连接/流已死。配合HTTP/2 PING（45s检测死连接）形成双保险。
-	DefaultStreamReadIdleTimeout = 15 * time.Second
+	// 8秒：正常SSE流每50-200ms出token，即使thinking模式也会每几秒发thinking事件；
+	// 8秒完全无数据几乎一定是连接/流已死。配合HTTP/2 PING（25s检测死连接）形成双保险。
+	DefaultStreamReadIdleTimeout = 8 * time.Second
 )
 
 // HTTP服务器配置常量

@@ -355,14 +355,14 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 
 	// 显式配置 HTTP/2（替代 ForceAttemptHTTP2），拿到 h2 Transport 的控制权
 	// 关键：设置 ReadIdleTimeout + PingTimeout，主动探测死连接
-	// 场景：上游静默断开HTTP/2连接 → 30s无数据发PING → 15s无PONG判定死亡 → 关闭连接
-	// 没有这个配置时，死连接会一直留在池里，所有走它的请求全挂起
+	// 场景：上游静默断开HTTP/2连接 → 15s无数据发PING → 10s无PONG判定死亡 → 关闭连接
+	// 总探测周期25s（原45s），更快发现死连接释放连接池
 	h2t, h2Err := http2.ConfigureTransports(transport)
 	if h2Err != nil {
 		log.Printf("[WARN] HTTP/2 配置失败，降级为 HTTP/1.1: %v", h2Err)
 	} else {
-		h2t.ReadIdleTimeout = 30 * time.Second // 连接上30s无数据 → 发PING帧探测
-		h2t.PingTimeout = 15 * time.Second     // PING发出15s无PONG → 判定连接死亡
+		h2t.ReadIdleTimeout = 15 * time.Second // 连接上15s无数据 → 发PING帧探测
+		h2t.PingTimeout = 10 * time.Second     // PING发出10s无PONG → 判定连接死亡
 	}
 
 	return transport
