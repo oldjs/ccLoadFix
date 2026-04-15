@@ -94,12 +94,12 @@ func isSlowFirstByteModel(lower string, body []byte) bool {
 
 	// 已知慢模型
 	slowPrefixes := []string{
-		"o3", "o4-mini",                      // OpenAI reasoning 系列
-		"claude-opus", "claude-3-opus",        // Anthropic Opus
-		"claude-3.7-sonnet",                   // 3.7-sonnet 有 thinking
-		"gemini-2.5-pro", "gemini-2.5-flash",  // Gemini thinking 系列
-		"deepseek-r1", "deepseek-reasoner",    // DeepSeek reasoning
-		"qwq",                                 // 通义千问推理
+		"o3", "o4-mini", // OpenAI reasoning 系列
+		"claude-opus", "claude-3-opus", // Anthropic Opus
+		"claude-3.7-sonnet",                  // 3.7-sonnet 有 thinking
+		"gemini-2.5-pro", "gemini-2.5-flash", // Gemini thinking 系列
+		"deepseek-r1", "deepseek-reasoner", // DeepSeek reasoning
+		"qwq", // 通义千问推理
 	}
 	for _, prefix := range slowPrefixes {
 		if strings.HasPrefix(lower, prefix) {
