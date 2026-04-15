@@ -112,12 +112,12 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 			{ChannelID: keyCreated.ID, KeyIndex: 1, APIKey: "sk-key2", KeyStrategy: model.KeyStrategySequential},
 		})
 
-		// 预期序列：5min → 10min → 20min → 30min
+		// 预期序列：5min → 10min → 15min(上限) → 15min(上限)
 		expectedSequence := []time.Duration{
 			5 * time.Minute,
 			10 * time.Minute,
-			20 * time.Minute,
-			30 * time.Minute,
+			15 * time.Minute,
+			15 * time.Minute,
 		}
 
 		currentTime := now

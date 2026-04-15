@@ -49,7 +49,7 @@ func TestRequestContextCreation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			// 移除defer reqCtx.Close()（Close方法已删除）
-			reqCtx := srv.newRequestContext(ctx, tt.requestPath, tt.body)
+			reqCtx := srv.newRequestContext(ctx, tt.requestPath, tt.body, "")
 
 			if reqCtx.isStreaming != tt.wantStreaming {
 				t.Errorf("isStreaming = %v, want %v", reqCtx.isStreaming, tt.wantStreaming)
@@ -219,6 +219,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			cfg.URL,
 			recorder,
 			nil, // observer
+			"",  // model
 		)
 
 		if err != nil {
@@ -253,6 +254,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			cfg.URL,
 			recorder,
 			nil, // observer
+			"",  // model
 		)
 
 		if err != nil {
@@ -344,6 +346,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 			cfg.URL,
 			recorder,
 			nil, // observer
+			"",  // model
 		)
 		resultChan <- struct {
 			result   *fwResult
@@ -426,6 +429,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				cfg.URL,
 				recorder,
 				nil, // observer
+				"",  // model
 			)
 		}
 
@@ -459,7 +463,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				cancel()
 			}()
 
-			_, _, _ = srv.forwardOnceAsync(ctx, cfg, "sk-test", http.MethodPost, []byte(`{}`), http.Header{}, "", "/v1/messages", cfg.URL, recorder, nil)
+			_, _, _ = srv.forwardOnceAsync(ctx, cfg, "sk-test", http.MethodPost, []byte(`{}`), http.Header{}, "", "/v1/messages", cfg.URL, recorder, nil, "")
 		}
 
 		after := waitForGoroutineDeltaLE(t, before, maxDelta, waitTimeout)
@@ -499,6 +503,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				cfg.URL,
 				recorder,
 				nil, // observer
+				"",  // model
 			)
 		}
 
@@ -552,6 +557,7 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 		cfg.URL,
 		recorder,
 		nil, // observer
+		"",  // model
 	)
 
 	// 验证返回结果
@@ -618,6 +624,7 @@ func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
 		cfg.URL,
 		recorder,
 		nil, // observer
+		"",  // model
 	)
 
 	if err == nil {

@@ -11,9 +11,9 @@ import (
 const (
 	defaultURLSelectorCleanupInterval = time.Hour
 	defaultURLSelectorLatencyMaxAge   = 24 * time.Hour
-	defaultURLSelectorProbeTimeout    = 5 * time.Second
-	slowTTFBIsolationThreshold        = 4 * time.Second
-	slowTTFBSevereThreshold           = 10 * time.Second
+	defaultURLSelectorProbeTimeout    = 3 * time.Second
+	slowTTFBIsolationThreshold        = 2500 * time.Millisecond
+	slowTTFBSevereThreshold           = 6 * time.Second
 )
 
 // urlKey 标识渠道+URL的组合
@@ -112,8 +112,8 @@ func NewURLSelector() *URLSelector {
 		noThinkingBlklist: make(map[urlModelKey]time.Time),
 		probing:           make(map[urlKey]time.Time),
 		alpha:             0.3,
-		cooldownBase:      2 * time.Minute,
-		cooldownMax:       48 * time.Hour, // 死URL最长冷却48小时
+		cooldownBase:      45 * time.Second,
+		cooldownMax:       4 * time.Hour, // 死URL最长冷却4小时
 		probeTimeout:      defaultURLSelectorProbeTimeout,
 		probeDial:         (&net.Dialer{}).DialContext,
 		cleanupInterval:   defaultURLSelectorCleanupInterval,

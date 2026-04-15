@@ -1,7 +1,9 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -25,20 +27,17 @@ type requestContext struct {
 
 // newRequestContext 创建请求上下文（处理超时控制）
 // 设计原则：
-// - 流式请求：使用 firstByteTimeout（首字节超时），之后不限制
+// - 流式请求：使用 firstByteTimeout（首字节超时，按模型分级），之后不限制
 // - 非流式请求：使用 nonStreamTimeout（整体超时），超时主动关闭上游连接
-// [INFO] Go 1.21+ 改进：总是返回非 nil 的 cancel，调用方无需检查（符合 Go 惯用法）
-func (s *Server) newRequestContext(parentCtx context.Context, requestPath string, body []byte) *requestContext {
+func (s *Server) newRequestContext(parentCtx context.Context, requestPath string, body []byte, model string) *requestContext {
 	isStreaming := isStreamingRequest(requestPath, body)
 
-	// [INFO] 关键改动：总是使用 WithCancel 包裹（即使无超时配置也能正常取消）
 	ctx, cancel := context.WithCancel(parentCtx)
 
 	// 非流式请求：在基础 cancel 之上叠加整体超时
 	if !isStreaming && s.nonStreamTimeout > 0 {
 		var timeoutCancel context.CancelFunc
 		ctx, timeoutCancel = context.WithTimeout(ctx, s.nonStreamTimeout)
-		// 链式 cancel：timeout 触发时也会取消父 context
 		originalCancel := cancel
 		cancel = func() {
 			timeoutCancel()
@@ -48,20 +47,94 @@ func (s *Server) newRequestContext(parentCtx context.Context, requestPath string
 
 	reqCtx := &requestContext{
 		ctx:         ctx,
-		cancel:      cancel, // [INFO] 总是非 nil，无需检查
+		cancel:      cancel,
 		startTime:   time.Now(),
 		isStreaming: isStreaming,
 	}
 
-	// 流式请求的首字节超时定时器
-	if isStreaming && s.firstByteTimeout > 0 {
-		reqCtx.firstByteTimer = time.AfterFunc(s.firstByteTimeout, func() {
-			reqCtx.firstByteTimedOut.Store(true)
-			cancel() // [INFO] 直接调用，无需检查
-		})
+	// 流式请求：按模型分级设置首字节超时
+	if isStreaming {
+		timeout := modelFirstByteTimeout(s.firstByteTimeout, model, body)
+		if timeout > 0 {
+			reqCtx.firstByteTimer = time.AfterFunc(timeout, func() {
+				reqCtx.firstByteTimedOut.Store(true)
+				cancel()
+			})
+		}
 	}
 
 	return reqCtx
+}
+
+// modelFirstByteTimeout 按模型分级返回首字节超时
+// 快模型(flash/haiku/mini等)：10s，标准模型：15s(兜底)，慢模型(opus/o3/thinking)：25s
+func modelFirstByteTimeout(serverDefault time.Duration, model string, body []byte) time.Duration {
+	lower := strings.ToLower(model)
+
+	// 慢模型：deep thinking、大推理，首字节天然慢
+	if isSlowFirstByteModel(lower, body) {
+		return 25 * time.Second
+	}
+
+	// 快模型：轻量推理，首字节应该很快
+	if isFastFirstByteModel(lower) {
+		return 10 * time.Second
+	}
+
+	// 标准模型：用服务端配置的兜底值（默认15s）
+	return serverDefault
+}
+
+// isSlowFirstByteModel 判断是否为首字节天然慢的模型
+func isSlowFirstByteModel(lower string, body []byte) bool {
+	// thinking/extended_thinking 模式：不管什么模型都慢
+	if hasThinkingEnabled(body) {
+		return true
+	}
+
+	// 已知慢模型
+	slowPrefixes := []string{
+		"o3", "o4-mini",                      // OpenAI reasoning 系列
+		"claude-opus", "claude-3-opus",        // Anthropic Opus
+		"claude-3.7-sonnet",                   // 3.7-sonnet 有 thinking
+		"gemini-2.5-pro", "gemini-2.5-flash",  // Gemini thinking 系列
+		"deepseek-r1", "deepseek-reasoner",    // DeepSeek reasoning
+		"qwq",                                 // 通义千问推理
+	}
+	for _, prefix := range slowPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// isFastFirstByteModel 判断是否为首字节很快的轻量模型
+func isFastFirstByteModel(lower string) bool {
+	fastPrefixes := []string{
+		"gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1-nano",
+		"claude-3-haiku", "claude-3.5-haiku", "claude-haiku",
+		"gemini-2.0-flash", "gemini-1.5-flash",
+		"deepseek-chat",
+		"qwen-turbo", "qwen-plus",
+	}
+	for _, prefix := range fastPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasThinkingEnabled 检查请求体里有没有开 thinking/extended_thinking
+func hasThinkingEnabled(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	// 快速字符串扫描，避免完整 JSON 解析
+	return bytes.Contains(body, []byte(`"thinking":`)) ||
+		bytes.Contains(body, []byte(`"extended_thinking":`)) ||
+		bytes.Contains(body, []byte(`"reasoning_effort":`))
 }
 
 func (rc *requestContext) stopFirstByteTimer() {

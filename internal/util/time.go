@@ -12,16 +12,16 @@ var (
 	AuthErrorInitialCooldown = 5 * time.Minute
 
 	// TimeoutErrorCooldown 超时错误(597/598)的冷却时间
-	TimeoutErrorCooldown = time.Minute
+	TimeoutErrorCooldown = 30 * time.Second
 
 	// ServerErrorInitialCooldown 服务器错误（5xx）的初始冷却时间
-	ServerErrorInitialCooldown = 2 * time.Minute
+	ServerErrorInitialCooldown = time.Minute
 
 	// RateLimitErrorCooldown 限流错误（429）的初始冷却时间
 	RateLimitErrorCooldown = time.Minute
 
 	// MaxCooldownDuration 最大冷却时长（指数退避上限）
-	MaxCooldownDuration = 30 * time.Minute
+	MaxCooldownDuration = 15 * time.Minute
 
 	// MinCooldownDuration 最小冷却时长（指数退避下限）
 	MinCooldownDuration = 10 * time.Second

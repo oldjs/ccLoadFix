@@ -119,10 +119,10 @@ func NewServer(store storage.Store) *Server {
 		log.Printf("[INFO] upstream_first_byte_timeout=0，已使用兜底值 %v 防止连接池耗尽", firstByteTimeout)
 	}
 
-	nonStreamTimeout := configService.GetDuration("non_stream_timeout", 120*time.Second)
+	nonStreamTimeout := configService.GetDuration("non_stream_timeout", 60*time.Second)
 	if nonStreamTimeout <= 0 {
-		log.Printf("[WARN] 无效的 non_stream_timeout=%v（必须 > 0），已使用默认值 %v", nonStreamTimeout, 120*time.Second)
-		nonStreamTimeout = 120 * time.Second
+		log.Printf("[WARN] 无效的 non_stream_timeout=%v（必须 > 0），已使用默认值 %v", nonStreamTimeout, 60*time.Second)
+		nonStreamTimeout = 60 * time.Second
 	}
 
 	streamReadIdleTimeout := configService.GetDuration("stream_read_idle_timeout", config.DefaultStreamReadIdleTimeout)
@@ -338,11 +338,11 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 		Proxy:                 http.ProxyFromEnvironment, // 支持 HTTPS_PROXY/HTTP_PROXY/NO_PROXY
 		MaxIdleConns:          config.HTTPMaxIdleConns,
 		MaxIdleConnsPerHost:   config.HTTPMaxIdleConnsPerHost,
-		IdleConnTimeout:       90 * time.Second, // 空闲连接90秒后关闭，避免僵尸连接
+		IdleConnTimeout:       120 * time.Second, // 空闲连接120秒后关闭，延长复用窗口减少重建开销
 		MaxConnsPerHost:       config.HTTPMaxConnsPerHost,
 		DialContext:           dialer.DialContext,
 		TLSHandshakeTimeout:   config.HTTPTLSHandshakeTimeout,
-		ResponseHeaderTimeout: 60 * time.Second, // 60s内拿不到响应头 → 直接关连接，不依赖context传播
+		ResponseHeaderTimeout: 15 * time.Second, // 15s内拿不到响应头 → 直接关连接，加速失败转移
 		DisableCompression:    false,
 		DisableKeepAlives:     false,
 		// 不用 ForceAttemptHTTP2，改用显式 http2.ConfigureTransports 拿到 h2 Transport 控制权
@@ -473,7 +473,7 @@ func (s *Server) invalidateChannelRelatedCache(channelID int64) {
 // GetWriteTimeout 返回建议的 HTTP WriteTimeout
 // 基于 nonStreamTimeout 动态计算，确保传输层超时 >= 业务层超时
 func (s *Server) GetWriteTimeout() time.Duration {
-	const minWriteTimeout = 120 * time.Second
+	const minWriteTimeout = 60 * time.Second
 	if s.nonStreamTimeout > minWriteTimeout {
 		return s.nonStreamTimeout
 	}

@@ -129,7 +129,7 @@ func TestURLSelector_SlowTTFBIsolationSkipsRecentlySlowSuccess(t *testing.T) {
 	sel.cooldownBase = 20 * time.Millisecond
 	urls := []string{"https://slow.com", "https://fast.com"}
 
-	sel.RecordLatency(1, "https://slow.com", 5*time.Second)
+	sel.RecordLatency(1, "https://slow.com", 3*time.Second) // 刚好超过隔离阈值(2.5s)
 	sel.RecordLatency(1, "https://fast.com", 400*time.Millisecond)
 
 	selected, _ := sel.SelectURL(1, urls)
@@ -144,7 +144,7 @@ func TestURLSelector_SlowTTFBIsolationSkipsRecentlySlowSuccess(t *testing.T) {
 
 	time.Sleep(25 * time.Millisecond)
 	seenSlow := false
-	for range 80 {
+	for range 200 {
 		picked, _ := sel.SelectURL(1, urls)
 		if picked == "https://slow.com" {
 			seenSlow = true

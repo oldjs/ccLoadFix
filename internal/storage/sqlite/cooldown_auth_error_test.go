@@ -39,10 +39,10 @@ func TestAuthErrorInitialCooldown(t *testing.T) {
 			expectedMaxDur: time.Minute,
 		},
 		{
-			name:           "500服务器错误-初始冷却2分钟",
+			name:           "500服务器错误-初始冷却1分钟",
 			statusCode:     500,
-			expectedMinDur: 2 * time.Minute,
-			expectedMaxDur: 2 * time.Minute,
+			expectedMinDur: time.Minute,
+			expectedMaxDur: time.Minute,
 		},
 	}
 
@@ -117,13 +117,13 @@ func TestAuthErrorExponentialBackoff(t *testing.T) {
 		t.Fatalf("创建测试渠道失败: %v", err)
 	}
 
-	// 预期的退避序列：5min -> 10min -> 20min -> 30min (上限)
+	// 预期的退避序列：5min -> 10min -> 15min(上限) -> 15min(上限)
 	expectedSequence := []time.Duration{
 		5 * time.Minute,  // 首次401错误
 		10 * time.Minute, // 第二次错误（5min * 2）
-		20 * time.Minute, // 第三次错误（10min * 2）
-		30 * time.Minute, // 第四次错误（20min * 2，但达到上限）
-		30 * time.Minute, // 第五次错误（保持上限）
+		15 * time.Minute, // 第三次错误（10min * 2 = 20min，但达到上限15min）
+		15 * time.Minute, // 第四次错误（保持上限）
+		15 * time.Minute, // 第五次错误（保持上限）
 	}
 
 	for i, expected := range expectedSequence {
@@ -231,28 +231,25 @@ func TestMixedErrorCodesCooldown(t *testing.T) {
 		t.Fatalf("创建测试渠道失败: %v", err)
 	}
 
-	// 场景：先遇到500错误（2分钟起），然后遇到401错误（应该还是5分钟）
+	// 场景：先遇到500错误（1分钟起），然后遇到401错误
 	duration1, err := store.BumpChannelCooldown(ctx, created.ID, now, 500)
 	if err != nil {
 		t.Fatalf("首次500错误失败: %v", err)
 	}
 
-	if duration1 != 2*time.Minute {
-		t.Errorf("500错误初始冷却时间错误: 期望2分钟，实际%v", duration1)
+	if duration1 != time.Minute {
+		t.Errorf("500错误初始冷却时间错误: 期望1分钟，实际%v", duration1)
 	}
 
 	// 模拟时间推移后遇到401错误
-	now2 := now.Add(3 * time.Minute)
+	now2 := now.Add(2 * time.Minute)
 	duration2, err := store.BumpChannelCooldown(ctx, created.ID, now2, 401)
 	if err != nil {
 		t.Fatalf("后续401错误失败: %v", err)
 	}
 
-	// 因为之前有2分钟的冷却记录，新的401错误应该基于历史记录进行指数退避
-	// 预期: 2min * 2 = 4min（但401首次应该是5分钟）
-	// 实际逻辑：有历史记录则基于历史翻倍，无历史则按状态码初始化
-	// 这里因为有历史duration_ms，所以是翻倍逻辑：2min * 2 = 4min
-	expectedDuration := 4 * time.Minute
+	// 有历史记录则基于历史翻倍：1min * 2 = 2min
+	expectedDuration := 2 * time.Minute
 	tolerance := 100 * time.Millisecond
 
 	if duration2 < expectedDuration-tolerance || duration2 > expectedDuration+tolerance {
@@ -260,7 +257,7 @@ func TestMixedErrorCodesCooldown(t *testing.T) {
 			expectedDuration, duration2)
 	}
 
-	t.Logf("[INFO] 500错误(2min) → 401错误(%v) - 使用指数退避而非重置", duration2)
+	t.Logf("[INFO] 500错误(1min) → 401错误(%v) - 使用指数退避而非重置", duration2)
 }
 
 // TestConcurrentCooldownUpdates 验证并发场景下冷却机制的数据一致性

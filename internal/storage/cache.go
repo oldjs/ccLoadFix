@@ -58,7 +58,7 @@ func NewChannelCache(store Store, ttl time.Duration) *ChannelCache {
 	// 初始化冷却缓存
 	c.cooldownCache.channels = make(map[int64]time.Time)
 	c.cooldownCache.keys = make(map[int64]map[int]time.Time)
-	c.cooldownCache.ttl = 30 * time.Second
+	c.cooldownCache.ttl = 15 * time.Second // 更快感知冷却解除，加速故障恢复
 
 	// 存一个空快照，避免 nil 判断
 	c.snapshot.Store(&channelSnapshot{

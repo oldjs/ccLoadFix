@@ -287,7 +287,7 @@ func TestURLSelector_SortAndSelectStayConsistent(t *testing.T) {
 	urls := []string{"https://best.example", "https://mid.example", "https://worst.example"}
 	sel.RecordLatency(1, urls[0], 100*time.Millisecond)
 	sel.RecordLatency(1, urls[1], 600*time.Millisecond)
-	sel.RecordLatency(1, urls[2], 2500*time.Millisecond)
+	sel.RecordLatency(1, urls[2], 2400*time.Millisecond) // 低于隔离阈值(2.5s)，不会被隔离
 
 	sorted := sel.SortURLs(1, urls)
 	if len(sorted) != len(urls) {

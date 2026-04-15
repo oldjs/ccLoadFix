@@ -105,8 +105,8 @@ func TestServer_GetWriteTimeout(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{nonStreamTimeout: 10 * time.Second}
-	if got := s.GetWriteTimeout(); got != 120*time.Second {
-		t.Fatalf("GetWriteTimeout()=%v, want 120s", got)
+	if got := s.GetWriteTimeout(); got != 60*time.Second {
+		t.Fatalf("GetWriteTimeout()=%v, want 60s", got)
 	}
 
 	s.nonStreamTimeout = 300 * time.Second

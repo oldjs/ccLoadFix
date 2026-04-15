@@ -7,7 +7,8 @@ import "time"
 const (
 	// DefaultFirstByteTimeout 流式请求首字节超时兜底值。
 	// 用户配 0 时用这个兜底，防止上游不响应时连接池被占满。
-	DefaultFirstByteTimeout = 30 * time.Second
+	// 具体值由 modelFirstByteTimeout 按模型分级覆盖，这里只是兜底
+	DefaultFirstByteTimeout = 15 * time.Second
 
 	// DefaultStreamReadIdleTimeout 流传输中段读取空闲超时：首字节到达后，连续多久没收到数据就判定流卡死。
 	// 15秒：正常SSE流每50-200ms出token，即使thinking模式也会发thinking事件；
@@ -50,15 +51,16 @@ const (
 	HTTPMaxIdleConns = 80
 
 	// HTTPMaxIdleConnsPerHost 单host空闲连接数
-	// 8：减少每个上游的空闲连接保有量
-	HTTPMaxIdleConnsPerHost = 8
+	// 16：提升连接复用率，减少高并发时新建连接的TCP+TLS开销
+	HTTPMaxIdleConnsPerHost = 16
 
 	// HTTPMaxConnsPerHost 单host最大连接数
-	HTTPMaxConnsPerHost = 20
+	// 40：减少并发排队，避免请求等待空闲连接
+	HTTPMaxConnsPerHost = 40
 
 	// TLSSessionCacheSize TLS会话缓存大小
-	// 256：减少 TLS session 内存（~500B/条）
-	TLSSessionCacheSize = 256
+	// 512：覆盖更多上游host的session复用，减少完整TLS握手次数
+	TLSSessionCacheSize = 512
 )
 
 // 日志系统配置常量
