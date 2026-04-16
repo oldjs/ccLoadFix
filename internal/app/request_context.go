@@ -18,11 +18,6 @@ type requestContext struct {
 	isStreaming       bool
 	firstByteTimer    *time.Timer
 	firstByteTimedOut atomic.Bool
-	// 流传输中段读取空闲定时器：首字节到达后启动，每次收到数据重置
-	// 超过阈值无数据 → 判定流卡死 → cancel context → 关闭body打断阻塞Read
-	readIdleTimer    *time.Timer
-	readIdleTimedOut atomic.Bool
-	readIdleTimeout  time.Duration // 存下来给 Reset 用
 }
 
 // newRequestContext 创建请求上下文（处理超时控制）
@@ -67,21 +62,21 @@ func (s *Server) newRequestContext(parentCtx context.Context, requestPath string
 }
 
 // modelFirstByteTimeout 按模型分级返回首字节超时
-// 快模型(flash/haiku/mini等)：10s，标准模型：15s(兜底)，慢模型(opus/o3/thinking)：25s
+// 快模型(flash/haiku/mini等)：15s，标准模型：30s(兜底)，慢模型(opus/o3/thinking)：60s
 func modelFirstByteTimeout(serverDefault time.Duration, model string, body []byte) time.Duration {
 	lower := strings.ToLower(model)
 
 	// 慢模型：deep thinking、大推理，首字节天然慢
 	if isSlowFirstByteModel(lower, body) {
-		return 25 * time.Second
+		return 60 * time.Second
 	}
 
 	// 快模型：轻量推理，首字节应该很快
 	if isFastFirstByteModel(lower) {
-		return 10 * time.Second
+		return 15 * time.Second
 	}
 
-	// 标准模型：用服务端配置的兜底值（默认15s）
+	// 标准模型：用服务端配置的兜底值（默认30s）
 	return serverDefault
 }
 
@@ -147,30 +142,6 @@ func (rc *requestContext) firstByteTimeoutTriggered() bool {
 	return rc.firstByteTimedOut.Load()
 }
 
-// startReadIdleTimer 在首字节到达后启动读取空闲定时器
-// 到期时设置标志 + cancel context → AfterFunc 关闭 body → 打断阻塞的 Read
-func (rc *requestContext) startReadIdleTimer(timeout time.Duration) {
-	if timeout <= 0 {
-		return
-	}
-	rc.readIdleTimeout = timeout
-	rc.readIdleTimer = time.AfterFunc(timeout, func() {
-		rc.readIdleTimedOut.Store(true)
-		rc.cancel()
-	})
-}
-
-// resetReadIdleTimer 每次从上游收到数据时重置定时器，重新计时
-func (rc *requestContext) resetReadIdleTimer() {
-	if rc.readIdleTimer != nil {
-		rc.readIdleTimer.Reset(rc.readIdleTimeout)
-	}
-}
-
-func (rc *requestContext) readIdleTimeoutTriggered() bool {
-	return rc.readIdleTimedOut.Load()
-}
-
 // Duration 返回从请求开始到现在的时间
 func (rc *requestContext) Duration() time.Duration {
 	return time.Since(rc.startTime)
@@ -180,8 +151,5 @@ func (rc *requestContext) Duration() time.Duration {
 // [INFO] 符合 Go 惯用法：defer reqCtx.cleanup() 一行搞定
 func (rc *requestContext) cleanup() {
 	rc.stopFirstByteTimer() // 停止首字节超时定时器
-	if rc.readIdleTimer != nil {
-		rc.readIdleTimer.Stop() // 停止读取空闲定时器
-	}
-	rc.cancel() // 取消 context（总是非 nil，无需检查）
+	rc.cancel()             // 取消 context（总是非 nil，无需检查）
 }

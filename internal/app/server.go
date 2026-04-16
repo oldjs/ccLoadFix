@@ -56,10 +56,9 @@ type Server struct {
 	cooldownWriteDropCount atomic.Int64
 
 	// 运行时配置（启动时从数据库加载，修改后重启生效）
-	maxKeyRetries        int           // 单个渠道内最大Key重试次数
-	firstByteTimeout     time.Duration // 上游首字节超时（流式请求）
-	nonStreamTimeout     time.Duration // 非流式请求超时
-	streamReadIdleTimout time.Duration // 流传输中段读取空闲超时（首字节后）
+	maxKeyRetries    int           // 单个渠道内最大Key重试次数
+	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
+	nonStreamTimeout time.Duration // 非流式请求超时
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
 	modelFuzzyMatch bool // 未命中时启用模糊匹配（子串匹配+版本排序）
 
@@ -123,20 +122,10 @@ func NewServer(store storage.Store) *Server {
 		log.Printf("[INFO] upstream_first_byte_timeout=0，已使用兜底值 %v 防止连接池耗尽", firstByteTimeout)
 	}
 
-	nonStreamTimeout := configService.GetDuration("non_stream_timeout", 60*time.Second)
+	nonStreamTimeout := configService.GetDuration("non_stream_timeout", 120*time.Second)
 	if nonStreamTimeout <= 0 {
-		log.Printf("[WARN] 无效的 non_stream_timeout=%v（必须 > 0），已使用默认值 %v", nonStreamTimeout, 60*time.Second)
-		nonStreamTimeout = 60 * time.Second
-	}
-
-	streamReadIdleTimeout := configService.GetDuration("stream_read_idle_timeout", config.DefaultStreamReadIdleTimeout)
-	if streamReadIdleTimeout < 0 {
-		log.Printf("[WARN] 无效的 stream_read_idle_timeout=%v（必须 >= 0），已使用兜底值 %v", streamReadIdleTimeout, config.DefaultStreamReadIdleTimeout)
-		streamReadIdleTimeout = config.DefaultStreamReadIdleTimeout
-	}
-	if streamReadIdleTimeout == 0 {
-		streamReadIdleTimeout = config.DefaultStreamReadIdleTimeout
-		log.Printf("[INFO] stream_read_idle_timeout=0，已使用兜底值 %v 防止流式响应无限挂起", streamReadIdleTimeout)
+		log.Printf("[WARN] 无效的 non_stream_timeout=%v（必须 > 0），已使用默认值 %v", nonStreamTimeout, 120*time.Second)
+		nonStreamTimeout = 120 * time.Second
 	}
 
 	logRetentionDays := configService.GetInt("log_retention_days", 7)
@@ -173,10 +162,9 @@ func NewServer(store storage.Store) *Server {
 		loginRateLimiter: util.NewLoginRateLimiter(),
 
 		// 运行时配置（启动时加载，修改后重启生效）
-		maxKeyRetries:        maxKeyRetries,
-		firstByteTimeout:     firstByteTimeout,
-		nonStreamTimeout:     nonStreamTimeout,
-		streamReadIdleTimout: streamReadIdleTimeout,
+		maxKeyRetries:    maxKeyRetries,
+		firstByteTimeout: firstByteTimeout,
+		nonStreamTimeout: nonStreamTimeout,
 		// 模型匹配配置（启动时加载，修改后重启生效）
 		modelFuzzyMatch: modelFuzzyMatch,
 
@@ -353,9 +341,8 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 		MaxConnsPerHost:       config.HTTPMaxConnsPerHost,
 		DialContext:           dialer.DialContext,
 		TLSHandshakeTimeout:   config.HTTPTLSHandshakeTimeout,
-		ResponseHeaderTimeout: 15 * time.Second, // 15s内拿不到响应头 → 直接关连接，加速失败转移
-		DisableCompression:    false,
-		DisableKeepAlives:     false,
+		DisableCompression: false,
+		DisableKeepAlives:  false,
 		// 不用 ForceAttemptHTTP2，改用显式 http2.ConfigureTransports 拿到 h2 Transport 控制权
 		TLSClientConfig: &tls.Config{
 			ClientSessionCache: tls.NewLRUClientSessionCache(config.TLSSessionCacheSize),
@@ -365,15 +352,14 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 	}
 
 	// 显式配置 HTTP/2（替代 ForceAttemptHTTP2），拿到 h2 Transport 的控制权
-	// 关键：设置 ReadIdleTimeout + PingTimeout，主动探测死连接
-	// 场景：上游静默断开HTTP/2连接 → 15s无数据发PING → 10s无PONG判定死亡 → 关闭连接
-	// 总探测周期25s（原45s），更快发现死连接释放连接池
+	// 设置 ReadIdleTimeout + PingTimeout，主动探测死连接（连接级，不影响活跃流）
+	// 场景：上游静默断开HTTP/2连接 → 30s无帧发PING → 15s无PONG判定死亡
 	h2t, h2Err := http2.ConfigureTransports(transport)
 	if h2Err != nil {
 		log.Printf("[WARN] HTTP/2 配置失败，降级为 HTTP/1.1: %v", h2Err)
 	} else {
-		h2t.ReadIdleTimeout = 15 * time.Second // 连接上15s无数据 → 发PING帧探测
-		h2t.PingTimeout = 10 * time.Second     // PING发出10s无PONG → 判定连接死亡
+		h2t.ReadIdleTimeout = 30 * time.Second // 连接上30s无帧 → 发PING探测（LLM thinking暂停可能很长）
+		h2t.PingTimeout = 15 * time.Second     // PING发出15s无PONG → 判定连接死亡
 	}
 
 	return transport
@@ -484,7 +470,7 @@ func (s *Server) invalidateChannelRelatedCache(channelID int64) {
 // GetWriteTimeout 返回建议的 HTTP WriteTimeout
 // 基于 nonStreamTimeout 动态计算，确保传输层超时 >= 业务层超时
 func (s *Server) GetWriteTimeout() time.Duration {
-	const minWriteTimeout = 60 * time.Second
+	const minWriteTimeout = 120 * time.Second
 	if s.nonStreamTimeout > minWriteTimeout {
 		return s.nonStreamTimeout
 	}

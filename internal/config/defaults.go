@@ -8,12 +8,7 @@ const (
 	// DefaultFirstByteTimeout 流式请求首字节超时兜底值。
 	// 用户配 0 时用这个兜底，防止上游不响应时连接池被占满。
 	// 具体值由 modelFirstByteTimeout 按模型分级覆盖，这里只是兜底
-	DefaultFirstByteTimeout = 15 * time.Second
-
-	// DefaultStreamReadIdleTimeout 流传输中段读取空闲超时：首字节到达后，连续多久没收到数据就判定流卡死。
-	// 8秒：正常SSE流每50-200ms出token，即使thinking模式也会每几秒发thinking事件；
-	// 8秒完全无数据几乎一定是连接/流已死。配合HTTP/2 PING（25s检测死连接）形成双保险。
-	DefaultStreamReadIdleTimeout = 8 * time.Second
+	DefaultFirstByteTimeout = 30 * time.Second
 )
 
 // HTTP服务器配置常量
