@@ -334,15 +334,15 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 	}
 
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment, // 支持 HTTPS_PROXY/HTTP_PROXY/NO_PROXY
-		MaxIdleConns:          config.HTTPMaxIdleConns,
-		MaxIdleConnsPerHost:   config.HTTPMaxIdleConnsPerHost,
-		IdleConnTimeout:       120 * time.Second, // 空闲连接120秒后关闭，延长复用窗口减少重建开销
-		MaxConnsPerHost:       config.HTTPMaxConnsPerHost,
-		DialContext:           dialer.DialContext,
-		TLSHandshakeTimeout:   config.HTTPTLSHandshakeTimeout,
-		DisableCompression: false,
-		DisableKeepAlives:  false,
+		Proxy:               http.ProxyFromEnvironment, // 支持 HTTPS_PROXY/HTTP_PROXY/NO_PROXY
+		MaxIdleConns:        config.HTTPMaxIdleConns,
+		MaxIdleConnsPerHost: config.HTTPMaxIdleConnsPerHost,
+		IdleConnTimeout:     120 * time.Second, // 空闲连接120秒后关闭，延长复用窗口减少重建开销
+		MaxConnsPerHost:     config.HTTPMaxConnsPerHost,
+		DialContext:         dialer.DialContext,
+		TLSHandshakeTimeout: config.HTTPTLSHandshakeTimeout,
+		DisableCompression:  false,
+		DisableKeepAlives:   false,
 		// 不用 ForceAttemptHTTP2，改用显式 http2.ConfigureTransports 拿到 h2 Transport 控制权
 		TLSClientConfig: &tls.Config{
 			ClientSessionCache: tls.NewLRUClientSessionCache(config.TLSSessionCacheSize),
