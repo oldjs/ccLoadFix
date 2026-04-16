@@ -360,16 +360,16 @@ Import-Prune-Target,https://keep-import.example.com,10,m1,{},anthropic,true,sk-t
 		t.Fatalf("期望至少更新1条记录，实际 summary=%+v", summary)
 	}
 
-	if _, ok := server.urlSelector.latencies[urlKey{channelID: targetCfg.ID, url: "https://old-import.example.com"}]; ok {
+	if _, ok := server.urlSelector.getShard(targetCfg.ID).latencies[urlKey{channelID: targetCfg.ID, url: "https://old-import.example.com"}]; ok {
 		t.Fatalf("期望导入更新后旧URL latency状态被清理")
 	}
-	if _, ok := server.urlSelector.cooldowns[urlKey{channelID: targetCfg.ID, url: "https://old-import.example.com"}]; ok {
+	if _, ok := server.urlSelector.getShard(targetCfg.ID).cooldowns[urlKey{channelID: targetCfg.ID, url: "https://old-import.example.com"}]; ok {
 		t.Fatalf("期望导入更新后旧URL cooldown状态被清理")
 	}
-	if _, ok := server.urlSelector.latencies[urlKey{channelID: targetCfg.ID, url: "https://keep-import.example.com"}]; !ok {
+	if _, ok := server.urlSelector.getShard(targetCfg.ID).latencies[urlKey{channelID: targetCfg.ID, url: "https://keep-import.example.com"}]; !ok {
 		t.Fatalf("期望保留更新后URL的状态")
 	}
-	if _, ok := server.urlSelector.latencies[urlKey{channelID: otherCfg.ID, url: "https://other-import.example.com"}]; !ok {
+	if _, ok := server.urlSelector.getShard(otherCfg.ID).latencies[urlKey{channelID: otherCfg.ID, url: "https://other-import.example.com"}]; !ok {
 		t.Fatalf("期望其他渠道状态不受影响")
 	}
 }

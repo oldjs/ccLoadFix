@@ -266,7 +266,7 @@ func TestAdminModels_HandleFetchModels_MultiURL(t *testing.T) {
 	if !server.urlSelector.IsCooledDown(cfg.ID, failUpstream.URL) {
 		t.Fatalf("expected failed URL cooled down, url=%s", failUpstream.URL)
 	}
-	latency, exists := server.urlSelector.probeLatencies[urlKey{channelID: cfg.ID, url: okUpstream.URL}]
+	latency, exists := server.urlSelector.getShard(cfg.ID).probeLatencies[urlKey{channelID: cfg.ID, url: okUpstream.URL}]
 	if !exists || latency == nil || latency.value <= 0 {
 		t.Fatalf("expected success URL probe latency recorded, got=%v", latency)
 	}

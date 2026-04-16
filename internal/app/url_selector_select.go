@@ -94,26 +94,28 @@ func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
 	return s.SelectURLForModel(channelID, "", urls)
 }
 
-// urlSuccessRateLocked 计算 URL 成功率。
-func (s *URLSelector) urlSuccessRateLocked(key urlKey) float64 {
-	rc, ok := s.requests[key]
+// urlSuccessRate 计算 URL 成功率（调用方已持有读锁）
+func urlSuccessRate(sh *urlShard, key urlKey) float64 {
+	rc, ok := sh.requests[key]
 	if !ok || (rc.success+rc.failure) == 0 {
 		return 1.0
 	}
 	return float64(rc.success) / float64(rc.success+rc.failure)
 }
 
-func (s *URLSelector) effectiveLatencyLocked(key urlKey) (float64, string, bool) {
-	if e, ok := s.latencies[key]; ok && e != nil {
+// effectiveLatencyInShard 获取有效延迟（调用方已持有读锁）
+func effectiveLatencyInShard(sh *urlShard, key urlKey) (float64, string, bool) {
+	if e, ok := sh.latencies[key]; ok && e != nil {
 		return penalizeSlowTTFBMS(e.value), latencySourceTTFB, true
 	}
-	if e, ok := s.probeLatencies[key]; ok && e != nil {
+	if e, ok := sh.probeLatencies[key]; ok && e != nil {
 		return normalizeSelectorLatencyMS(e.value), latencySourceProbe, true
 	}
 	return -1, latencySourceUnknown, false
 }
 
-func (s *URLSelector) buildCandidateLocked(channelID int64, model, rawURL string, idx int, now time.Time) selectorCandidate {
+// buildCandidate 构建单个候选（调用方已持有读锁）
+func buildCandidate(sh *urlShard, channelID int64, model, rawURL string, idx int, now time.Time) selectorCandidate {
 	key := urlKey{channelID: channelID, url: rawURL}
 	c := selectorCandidate{
 		url:              rawURL,
@@ -122,31 +124,31 @@ func (s *URLSelector) buildCandidateLocked(channelID int64, model, rawURL string
 		probeLatency:     -1,
 		effectiveLatency: -1,
 		latencySource:    latencySourceUnknown,
-		successRate:      s.urlSuccessRateLocked(key),
+		successRate:      urlSuccessRate(sh, key),
 	}
 
-	if e, ok := s.latencies[key]; ok && e != nil {
+	if e, ok := sh.latencies[key]; ok && e != nil {
 		c.realTTFB = normalizeSelectorLatencyMS(e.value)
 	}
-	if e, ok := s.probeLatencies[key]; ok && e != nil {
+	if e, ok := sh.probeLatencies[key]; ok && e != nil {
 		c.probeLatency = normalizeSelectorLatencyMS(e.value)
 	}
-	if latency, source, known := s.effectiveLatencyLocked(key); known {
+	if latency, source, known := effectiveLatencyInShard(sh, key); known {
 		c.effectiveLatency = latency
 		c.latencySource = source
 	}
 
-	if cd, ok := s.cooldowns[key]; ok && now.Before(cd.until) {
+	if cd, ok := sh.cooldowns[key]; ok && now.Before(cd.until) {
 		c.cooldownActive = true
 		c.cooled = true
 	}
-	if until, ok := s.slowIsolations[key]; ok && now.Before(until) {
+	if until, ok := sh.slowIsolations[key]; ok && now.Before(until) {
 		c.slowIsolated = true
 		c.cooled = true
 	}
 	if model != "" {
 		umk := urlModelKey{channelID: channelID, url: rawURL, model: model}
-		if expiry, ok := s.noThinkingBlklist[umk]; ok && now.Before(expiry) {
+		if expiry, ok := sh.noThinkingBlklist[umk]; ok && now.Before(expiry) {
 			c.noThinkingBlocked = true
 			c.cooled = true
 		}
@@ -155,10 +157,11 @@ func (s *URLSelector) buildCandidateLocked(channelID int64, model, rawURL string
 	return c
 }
 
-func (s *URLSelector) buildCandidatesLocked(channelID int64, model string, urls []string, now time.Time) []selectorCandidate {
+// buildCandidates 构建所有候选（调用方已持有读锁）
+func buildCandidates(sh *urlShard, channelID int64, model string, urls []string, now time.Time) []selectorCandidate {
 	candidates := make([]selectorCandidate, len(urls))
 	for i, rawURL := range urls {
-		candidates[i] = s.buildCandidateLocked(channelID, model, rawURL, i, now)
+		candidates[i] = buildCandidate(sh, channelID, model, rawURL, i, now)
 	}
 	return candidates
 }
@@ -292,12 +295,13 @@ func pickCanaryCandidate(candidates []selectorCandidate) selectorCandidate {
 	return weightedRandomCandidate(candidates)
 }
 
-func (s *URLSelector) markAffinityLocked(channelID int64, model string, candidates []selectorCandidate) {
+// markAffinity 标记亲和性候选（调用方已持有读锁）
+func markAffinity(sh *urlShard, channelID int64, model string, candidates []selectorCandidate) {
 	if model == "" {
 		return
 	}
 	ak := modelAffinityKey{channelID: channelID, model: model}
-	aff, ok := s.affinities[ak]
+	aff, ok := sh.affinities[ak]
 	if !ok || aff == nil || aff.url == "" {
 		return
 	}
@@ -340,8 +344,6 @@ func buildPlannedOrder(primary []selectorCandidate) []selectorCandidate {
 }
 
 // appendRemainingUnknowns 把还没出现在 ordered 里的 unknown URL 追加到末尾。
-// 这样即使 shouldExploreUnknown=false，unknown URL 也会作为最低优先级兜底出现在计划里，
-// 在所有已知 URL 全部失败时有机会被试到，防止 GC 清掉延迟数据后 URL 永久失活。
 func appendRemainingUnknowns(ordered []selectorCandidate, unknown []selectorCandidate) []selectorCandidate {
 	if len(unknown) == 0 {
 		return ordered
@@ -362,7 +364,7 @@ func appendCooldownFallbacks(ordered []selectorCandidate, cooldownFallback []sel
 	if len(cooldownFallback) == 0 {
 		return ordered
 	}
-	// 冷却URL也得按延迟源分层：有真实TTFB的优先，probe次之，unknown兜底
+	// 冷却URL也得按延迟源分层
 	real, probeOnly, unknown := splitCandidatesBySource(cooldownFallback)
 	ordered = append(ordered, sortCandidatesByScore(real)...)
 	ordered = append(ordered, sortCandidatesByScore(probeOnly)...)
@@ -370,23 +372,19 @@ func appendCooldownFallbacks(ordered []selectorCandidate, cooldownFallback []sel
 	return ordered
 }
 
-// planWithCanary 把 canary 混入 primary 的首跳池做加权随机，产出完整的尝试顺序。
-// extraTiers 是优先级低于 primary 但高于 cooldown 的候选（比如 real 场景里的 probeOnly）。
+// planWithCanary 把 canary 混入 primary 的首跳池做加权随机
 func planWithCanary(primary []selectorCandidate, canary selectorCandidate, extraTiers []selectorCandidate, cooledFallback []selectorCandidate) []selectorCandidate {
-	// canary 和 primary 一起进首跳池
 	firstPool := append([]selectorCandidate(nil), primary...)
 	firstPool = append(firstPool, canary)
 	first := weightedRandomCandidate(firstPool)
 
 	ordered := []selectorCandidate{first}
 	if first.url != canary.url {
-		// primary 中选到的，canary 放最后当探索兜底
 		ordered = append(ordered, sortCandidatesByScore(removeCandidateByURL(primary, first.url))...)
 		ordered = append(ordered, sortCandidatesByScore(extraTiers)...)
 		ordered = appendCooldownFallbacks(ordered, cooledFallback)
 		ordered = append(ordered, canary)
 	} else {
-		// canary 赢了首跳，primary 全部跟在后面兜底
 		ordered = append(ordered, sortCandidatesByScore(primary)...)
 		ordered = append(ordered, sortCandidatesByScore(extraTiers)...)
 		ordered = appendCooldownFallbacks(ordered, cooledFallback)
@@ -394,9 +392,10 @@ func planWithCanary(primary []selectorCandidate, canary selectorCandidate, extra
 	return ordered
 }
 
-func (s *URLSelector) planCandidatesLocked(channelID int64, model string, urls []string, now time.Time) []selectorCandidate {
-	candidates := s.buildCandidatesLocked(channelID, model, urls, now)
-	s.markAffinityLocked(channelID, model, candidates)
+// planCandidates 规划候选URL的尝试顺序（调用方已持有读锁）
+func planCandidates(sh *urlShard, channelID int64, model string, urls []string, now time.Time) []selectorCandidate {
+	candidates := buildCandidates(sh, channelID, model, urls, now)
+	markAffinity(sh, channelID, model, candidates)
 	active, cooledFallback := splitCandidatesByAvailability(candidates)
 	real, probeOnly, unknown := splitCandidatesBySource(active)
 
@@ -405,14 +404,12 @@ func (s *URLSelector) planCandidatesLocked(channelID int64, model string, urls [
 	case len(real) > 0:
 		if canary, ok := canaryCandidate(real, unknown); ok {
 			planned := planWithCanary(real, canary, probeOnly, cooledFallback)
-			// canary 只选了一个 unknown，剩下的追加到末尾做兜底
 			return appendRemainingUnknowns(planned, unknown)
 		}
 		ordered = append(ordered, buildPlannedOrder(real)...)
 		ordered = append(ordered, sortCandidatesByScore(probeOnly)...)
 		ordered = appendCooldownFallbacks(ordered, cooledFallback)
 		ordered = appendCanaryIfNeeded(ordered, real, unknown)
-		// 不管 canary 有没有选中，剩余 unknown 都追加到末尾做最低优先级兜底
 		ordered = appendRemainingUnknowns(ordered, unknown)
 	case len(probeOnly) > 0:
 		if canary, ok := canaryCandidate(probeOnly, unknown); ok {
@@ -424,7 +421,6 @@ func (s *URLSelector) planCandidatesLocked(channelID int64, model string, urls [
 		ordered = appendCanaryIfNeeded(ordered, probeOnly, unknown)
 		ordered = appendRemainingUnknowns(ordered, unknown)
 	case len(unknown) > 0:
-		// 全都没延迟数据时，用加权随机+排序产出完整顺序，别只选一个 canary
 		ordered = append(ordered, buildPlannedOrder(unknown)...)
 		ordered = appendCooldownFallbacks(ordered, cooledFallback)
 	}
@@ -440,6 +436,7 @@ func candidatesToSortedURLs(candidates []selectorCandidate) []sortedURL {
 	return result
 }
 
+// planURLsForModel 规划URL的尝试顺序（自动按 channelID 取分片锁）
 func (s *URLSelector) planURLsForModel(channelID int64, model string, urls []string) []sortedURL {
 	if len(urls) == 0 {
 		return nil
@@ -449,13 +446,14 @@ func (s *URLSelector) planURLsForModel(channelID int64, model string, urls []str
 	}
 
 	now := time.Now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.getShard(channelID)
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
 
-	return candidatesToSortedURLs(s.planCandidatesLocked(channelID, model, urls, now))
+	return candidatesToSortedURLs(planCandidates(sh, channelID, model, urls, now))
 }
 
-// SelectURLForModel 从候选 URL 中选一个最优的，模型亲和性只作为软偏置。
+// SelectURLForModel 从候选 URL 中选一个最优的
 func (s *URLSelector) SelectURLForModel(channelID int64, model string, urls []string) (string, int) {
 	planned := s.planURLsForModel(channelID, model, urls)
 	if len(planned) == 0 {
@@ -464,7 +462,7 @@ func (s *URLSelector) SelectURLForModel(channelID int64, model string, urls []st
 	return planned[0].url, planned[0].idx
 }
 
-// SortURLs 返回不带模型亲和性的计划顺序，用于诊断或非模型场景。
+// SortURLs 返回不带模型亲和性的计划顺序
 func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 	return s.planURLsForModel(channelID, "", urls)
 }

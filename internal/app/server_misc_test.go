@@ -315,9 +315,10 @@ func TestServer_ShutdownCancelsInFlightURLProbe(t *testing.T) {
 		}
 	}
 
-	srv.urlSelector.mu.RLock()
-	probingLeft := len(srv.urlSelector.probing)
-	srv.urlSelector.mu.RUnlock()
+	miscShard := srv.urlSelector.getShard(channelID)
+	miscShard.mu.RLock()
+	probingLeft := len(miscShard.probing)
+	miscShard.mu.RUnlock()
 	if probingLeft != 0 {
 		t.Fatalf("expected probing markers cleared after shutdown cancellation, got %d", probingLeft)
 	}

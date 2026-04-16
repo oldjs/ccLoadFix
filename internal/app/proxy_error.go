@@ -33,16 +33,18 @@ func (s *Server) applyCooldownDecision(
 	cfg *model.Config,
 	in cooldown.ErrorInput,
 ) cooldown.Action {
-	cooldownCtx, cancel := cooldownWriteContext(ctx)
-	defer cancel()
-
 	// 设置渠道类型，用于特定渠道的错误处理策略
 	in.ChannelType = cfg.ChannelType
 
-	action := s.cooldownManager.HandleError(cooldownCtx, in)
+	// 同步分类拿 Action（纯计算，不写DB），DB写入异步投递
+	action := s.cooldownManager.DecideAction(ctx, in)
 
 	if action == cooldown.ActionRetryKey || action == cooldown.ActionRetryChannel {
+		// 立即失效缓存，确保后续请求不会选到已冷却的渠道/Key
 		s.invalidateChannelRelatedCache(cfg.ID)
+
+		// DB写入异步化：HandleError 在 worker 中重新分类+写入
+		s.queueCooldownWrite(cooldownWriteTask{input: in})
 	}
 
 	return action
@@ -368,7 +370,7 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, isSuccess bool, duratio
 // 使用 cooldownManager 统一管理冷却状态清除
 // 注意：与 handleSuccessResponse（HTTP层）不同
 func (s *Server) handleProxySuccess(
-	ctx context.Context,
+	_ context.Context,
 	cfg *model.Config,
 	keyIndex int,
 	actualModel string,
@@ -377,25 +379,14 @@ func (s *Server) handleProxySuccess(
 	duration float64,
 	reqCtx *proxyRequestContext,
 ) (*proxyResult, cooldown.Action) {
-	cooldownCtx, cancel := cooldownWriteContext(ctx)
-	defer cancel()
+	// 异步清除冷却（DB写入不阻塞请求返回）
+	s.queueCooldownWrite(cooldownWriteTask{
+		channelID: cfg.ID,
+		keyIndex:  keyIndex,
+		isSuccess: true,
+	})
 
-	// 使用 cooldownManager 清除冷却状态
-	// 设计原则: 清除失败不应影响用户请求成功
-	if err := s.cooldownManager.ClearChannelCooldown(cooldownCtx, cfg.ID); err != nil {
-		count := cooldownClearChannelFailCount.Add(1)
-		if count%100 == 1 {
-			log.Printf("[WARN] ClearChannelCooldown 失败 (累计: %d): channel_id=%d err=%v", count, cfg.ID, err)
-		}
-	}
-	if err := s.cooldownManager.ClearKeyCooldown(cooldownCtx, cfg.ID, keyIndex); err != nil {
-		count := cooldownClearKeyFailCount.Add(1)
-		if count%100 == 1 {
-			log.Printf("[WARN] ClearKeyCooldown 失败 (累计: %d): channel_id=%d key_index=%d err=%v", count, cfg.ID, keyIndex, err)
-		}
-	}
-
-	// 冷却状态已恢复，刷新相关缓存避免下次命中过期数据
+	// 立即失效缓存，确保后续请求感知冷却已清除
 	s.invalidateChannelRelatedCache(cfg.ID)
 
 	// Claude thinking 检测：Claude 渠道 + 请求带了 thinking 参数 + 响应没 thinking 块 → 黑名单

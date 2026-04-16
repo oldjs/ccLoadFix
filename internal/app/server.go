@@ -51,6 +51,10 @@ type Server struct {
 	tokenStatsCh        chan tokenStatsUpdate
 	tokenStatsDropCount atomic.Int64
 
+	// 异步冷却写入（请求路径只做分类，DB写入在后台worker完成）
+	cooldownWriteCh        chan cooldownWriteTask
+	cooldownWriteDropCount atomic.Int64
+
 	// 运行时配置（启动时从数据库加载，修改后重启生效）
 	maxKeyRetries        int           // 单个渠道内最大Key重试次数
 	firstByteTimeout     time.Duration // 上游首字节超时（流式请求）
@@ -195,6 +199,9 @@ func NewServer(store storage.Store) *Server {
 		// Token统计队列（避免每请求起goroutine）
 		tokenStatsCh: make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
 
+		// 冷却写入队列（请求路径零DB写入，后台worker持久化）
+		cooldownWriteCh: make(chan cooldownWriteTask, 500),
+
 		activeRequests: newActiveRequestManager(),
 	}
 
@@ -298,6 +305,10 @@ func NewServer(store storage.Store) *Server {
 	// 启动Token统计Worker（有界队列：性能可控，Shutdown可等待）
 	s.wg.Add(1)
 	go s.tokenStatsWorker()
+
+	// 启动冷却写入Worker（异步持久化，请求路径不等DB）
+	s.wg.Add(1)
+	go s.cooldownWriteWorker()
 
 	// 启动后台清理协程（Token 认证）
 	s.wg.Add(1)

@@ -556,9 +556,10 @@ func TestProxy_MultiURLProbeCanceledByShutdown_DoesNotPolluteCooldown(t *testing
 
 	deadline := time.Now().Add(time.Second)
 	for {
-		env.server.urlSelector.mu.RLock()
-		probingLeft := len(env.server.urlSelector.probing)
-		env.server.urlSelector.mu.RUnlock()
+		shard := env.server.urlSelector.getShard(channelID)
+		shard.mu.RLock()
+		probingLeft := len(shard.probing)
+		shard.mu.RUnlock()
 		if probingLeft == 0 {
 			break
 		}
@@ -885,6 +886,9 @@ func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 (header already sent), got %d: %s", w.Code, w.Body.String())
 	}
+
+	// 冷却写入是异步的（P0-3优化），等待worker处理完成
+	time.Sleep(100 * time.Millisecond)
 
 	// 关键断言：SSE error 事件必须触发冷却副作用（单Key渠道会升级为渠道级冷却）。
 	afterCooldowns, err := env.store.GetAllChannelCooldowns(ctx)

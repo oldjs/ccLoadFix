@@ -10,11 +10,20 @@ import (
 	modelpkg "ccLoad/internal/model"
 )
 
-// SmoothWeightedRR 平滑加权轮询调度器
-// 算法来源：Nginx upstream smooth weighted round-robin
-type SmoothWeightedRR struct {
+// rrShardCount 分片数量，必须是2的幂
+const rrShardCount = 16
+
+// rrShard 独立分片，持有自己的锁和状态，不同分片互不竞争
+type rrShard struct {
 	mu     sync.Mutex
 	states map[string]*rrGroupState // key: 渠道ID组合的签名
+}
+
+// SmoothWeightedRR 平滑加权轮询调度器
+// 算法来源：Nginx upstream smooth weighted round-robin
+// 优化：16分片锁，不同渠道组合大概率落在不同分片，高并发下减少锁竞争
+type SmoothWeightedRR struct {
+	shards [rrShardCount]rrShard
 }
 
 // rrGroupState 单个优先级组的轮询状态
@@ -25,10 +34,21 @@ type rrGroupState struct {
 
 // NewSmoothWeightedRR 创建平滑加权轮询调度器
 func NewSmoothWeightedRR() *SmoothWeightedRR {
-	rr := &SmoothWeightedRR{
-		states: make(map[string]*rrGroupState),
+	rr := &SmoothWeightedRR{}
+	for i := range rr.shards {
+		rr.shards[i].states = make(map[string]*rrGroupState)
 	}
 	return rr
+}
+
+// shardFor 根据 groupKey 哈希定位分片（内联 FNV-1a，零分配）
+func (rr *SmoothWeightedRR) shardFor(groupKey string) *rrShard {
+	h := uint32(2166136261) // FNV-1a offset basis
+	for i := 0; i < len(groupKey); i++ {
+		h ^= uint32(groupKey[i])
+		h *= 16777619 // FNV-1a prime
+	}
+	return &rr.shards[h%rrShardCount]
 }
 
 // Select 从渠道列表中选择下一个渠道（平滑加权轮询）
@@ -51,19 +71,21 @@ func (rr *SmoothWeightedRR) Select(
 		return channels
 	}
 
-	// 生成组签名（用于区分不同的渠道组合）
+	// 生成组签名（锁外完成，避免持锁做排序+拼接）
 	groupKey := rr.generateGroupKey(channels)
 
-	rr.mu.Lock()
-	defer rr.mu.Unlock()
+	// 只锁目标分片，其他分片的请求不受影响
+	shard := rr.shardFor(groupKey)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
 	// 获取或创建组状态
-	state, exists := rr.states[groupKey]
+	state, exists := shard.states[groupKey]
 	if !exists {
 		state = &rrGroupState{
 			currentWeights: make(map[int64]int),
 		}
-		rr.states[groupKey] = state
+		shard.states[groupKey] = state
 	}
 	state.lastAccess = time.Now()
 
@@ -169,25 +191,45 @@ func (rr *SmoothWeightedRR) generateGroupKey(channels []*modelpkg.Config) string
 	return b.String()
 }
 
-// Cleanup 清理过期的轮询状态（可选，避免内存泄漏）
+// Cleanup 清理过期的轮询状态（遍历所有分片）
 // 建议在后台定期调用
 func (rr *SmoothWeightedRR) Cleanup(maxAge time.Duration) {
-	rr.mu.Lock()
-	defer rr.mu.Unlock()
-
 	now := time.Now()
-	for key, state := range rr.states {
-		if now.Sub(state.lastAccess) > maxAge {
-			delete(rr.states, key)
+	for i := range rr.shards {
+		shard := &rr.shards[i]
+		shard.mu.Lock()
+		for key, state := range shard.states {
+			if now.Sub(state.lastAccess) > maxAge {
+				delete(shard.states, key)
+			}
 		}
+		shard.mu.Unlock()
 	}
 }
 
 // ResetAll 重置所有轮询状态（渠道配置变更时调用）
 func (rr *SmoothWeightedRR) ResetAll() {
-	rr.mu.Lock()
-	defer rr.mu.Unlock()
-	rr.states = make(map[string]*rrGroupState)
+	for i := range rr.shards {
+		shard := &rr.shards[i]
+		shard.mu.Lock()
+		shard.states = make(map[string]*rrGroupState)
+		shard.mu.Unlock()
+	}
+}
+
+// getState 查找指定 groupKey 的状态（仅测试用，不加锁）
+func (rr *SmoothWeightedRR) getState(groupKey string) *rrGroupState {
+	shard := rr.shardFor(groupKey)
+	return shard.states[groupKey]
+}
+
+// stateCount 返回所有分片的状态总数（仅测试用，不加锁）
+func (rr *SmoothWeightedRR) stateCount() int {
+	total := 0
+	for i := range rr.shards {
+		total += len(rr.shards[i].states)
+	}
+	return total
 }
 
 // calcEffectiveKeyCount 计算渠道的有效Key数量（排除冷却中的Key）

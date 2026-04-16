@@ -353,9 +353,10 @@ func TestURLSelector_ControlledCanaryPicksAtMostOneUnknown(t *testing.T) {
 	for range 5 {
 		sel.CooldownURL(1, urls[0])
 	}
-	sel.mu.Lock()
-	delete(sel.cooldowns, urlKey{channelID: 1, url: urls[0]})
-	sel.mu.Unlock()
+	rvSh := sel.getShard(1)
+	rvSh.mu.Lock()
+	delete(rvSh.cooldowns, urlKey{channelID: 1, url: urls[0]})
+	rvSh.mu.Unlock()
 
 	seenCanary := make(map[string]int)
 	for range 120 {
@@ -497,10 +498,11 @@ func TestURLSelector_CooldownAndSlowIsolation_Independent(t *testing.T) {
 	sel.RecordLatency(1, url, 5*time.Second)
 
 	// cooldown 被成功清了，但 slowIsolation 还在，所以仍然报 cooled
-	sel.mu.RLock()
-	_, hasCooldown := sel.cooldowns[urlKey{channelID: 1, url: url}]
-	_, hasSlowIso := sel.slowIsolations[urlKey{channelID: 1, url: url}]
-	sel.mu.RUnlock()
+	isoSh := sel.getShard(1)
+	isoSh.mu.RLock()
+	_, hasCooldown := isoSh.cooldowns[urlKey{channelID: 1, url: url}]
+	_, hasSlowIso := isoSh.slowIsolations[urlKey{channelID: 1, url: url}]
+	isoSh.mu.RUnlock()
 
 	if hasCooldown {
 		t.Fatalf("expected cooldown cleared after successful latency record")

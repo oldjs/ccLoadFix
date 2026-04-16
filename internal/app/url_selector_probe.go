@@ -35,12 +35,6 @@ func extractHostPort(rawURL string) string {
 }
 
 // ProbeURLs 对还没任何延迟数据的 URL 做并行 TCP 探测，记录 RTT 作为冷启动种子。
-// 设计目标：多URL渠道首次被选中时，避免随机选到网络延迟高的URL。
-//
-// TCP连接时间反映纯网络延迟（DNS+TCP握手），与模型推理时间无关，
-// 因此不会误杀推理模型的长首字节等待。
-//
-// 探测结果仅作为初始EWMA种子，后续真实请求的TTFB会纳入EWMA并逐步校准。
 func (s *URLSelector) ProbeURLs(parentCtx context.Context, channelID int64, urls []string) {
 	if len(urls) <= 1 {
 		return
@@ -49,26 +43,28 @@ func (s *URLSelector) ProbeURLs(parentCtx context.Context, channelID int64, urls
 		parentCtx = context.Background()
 	}
 
-	// 原子筛选+占位，避免并发请求重复探测同一URL。
-	s.mu.Lock()
+	sh := s.getShard(channelID)
+
+	// 原子筛选+占位，避免并发请求重复探测同一URL
+	sh.mu.Lock()
 	now := time.Now()
-	s.maybeCleanupLocked(now)
+	s.maybeCleanupShard(sh, now)
 	unknowns := make([]string, 0, len(urls))
 	for _, u := range urls {
 		key := urlKey{channelID: channelID, url: u}
-		if _, known := s.latencies[key]; known {
+		if _, known := sh.latencies[key]; known {
 			continue
 		}
-		if _, known := s.probeLatencies[key]; known {
+		if _, known := sh.probeLatencies[key]; known {
 			continue
 		}
-		if _, inFlight := s.probing[key]; inFlight {
+		if _, inFlight := sh.probing[key]; inFlight {
 			continue
 		}
-		s.probing[key] = now
+		sh.probing[key] = now
 		unknowns = append(unknowns, u)
 	}
-	s.mu.Unlock()
+	sh.mu.Unlock()
 
 	if len(unknowns) == 0 {
 		return
@@ -92,9 +88,9 @@ func (s *URLSelector) ProbeURLs(parentCtx context.Context, channelID int64, urls
 	pending := make(map[string]struct{}, len(unknowns))
 	clearProbing := func(probedURL string) {
 		key := urlKey{channelID: channelID, url: probedURL}
-		s.mu.Lock()
-		delete(s.probing, key)
-		s.mu.Unlock()
+		sh.mu.Lock()
+		delete(sh.probing, key)
+		sh.mu.Unlock()
 	}
 	for _, u := range unknowns {
 		pending[u] = struct{}{}
@@ -146,7 +142,7 @@ func (s *URLSelector) ProbeURLs(parentCtx context.Context, channelID int64, urls
 		case r := <-results:
 			handleResult(r)
 		case <-ctx.Done():
-			// 超时/取消：先吃掉已经回来的结果，再处理剩下没回来的URL。
+			// 超时/取消：先吃掉已经回来的结果
 			ctxErr := ctx.Err()
 			shouldCooldownPending := errors.Is(ctxErr, context.DeadlineExceeded)
 			for {

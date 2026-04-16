@@ -586,16 +586,16 @@ func TestHandleUpdateChannel_PrunesURLSelectorState(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	if _, ok := server.urlSelector.latencies[urlKey{channelID: cfg.ID, url: "https://old-1.example.com"}]; ok {
+	if _, ok := server.urlSelector.getShard(cfg.ID).latencies[urlKey{channelID: cfg.ID, url: "https://old-1.example.com"}]; ok {
 		t.Fatalf("expected old url latency state removed after update")
 	}
-	if _, ok := server.urlSelector.cooldowns[urlKey{channelID: cfg.ID, url: "https://old-1.example.com"}]; ok {
+	if _, ok := server.urlSelector.getShard(cfg.ID).cooldowns[urlKey{channelID: cfg.ID, url: "https://old-1.example.com"}]; ok {
 		t.Fatalf("expected old url cooldown state removed after update")
 	}
-	if _, ok := server.urlSelector.latencies[urlKey{channelID: cfg.ID, url: "https://keep.example.com"}]; !ok {
+	if _, ok := server.urlSelector.getShard(cfg.ID).latencies[urlKey{channelID: cfg.ID, url: "https://keep.example.com"}]; !ok {
 		t.Fatalf("expected kept url latency state preserved after update")
 	}
-	if _, ok := server.urlSelector.latencies[urlKey{channelID: otherCfg.ID, url: "https://other.example.com"}]; !ok {
+	if _, ok := server.urlSelector.getShard(otherCfg.ID).latencies[urlKey{channelID: otherCfg.ID, url: "https://other.example.com"}]; !ok {
 		t.Fatalf("expected other channel state preserved")
 	}
 }
@@ -712,17 +712,18 @@ func TestHandleDeleteChannel_RemovesURLSelectorState(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	for key := range server.urlSelector.latencies {
+	targetShard := server.urlSelector.getShard(targetCfg.ID)
+	for key := range targetShard.latencies {
 		if key.channelID == targetCfg.ID {
 			t.Fatalf("expected deleted channel latency state removed, found key=%+v", key)
 		}
 	}
-	for key := range server.urlSelector.cooldowns {
+	for key := range targetShard.cooldowns {
 		if key.channelID == targetCfg.ID {
 			t.Fatalf("expected deleted channel cooldown state removed, found key=%+v", key)
 		}
 	}
-	if _, ok := server.urlSelector.latencies[urlKey{channelID: otherCfg.ID, url: "https://other.example.com"}]; !ok {
+	if _, ok := server.urlSelector.getShard(otherCfg.ID).latencies[urlKey{channelID: otherCfg.ID, url: "https://other.example.com"}]; !ok {
 		t.Fatalf("expected other channel state preserved")
 	}
 }

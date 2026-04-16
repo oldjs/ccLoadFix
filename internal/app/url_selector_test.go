@@ -251,9 +251,10 @@ func TestURLSelector_ExploreWhenNoGoodKnown(t *testing.T) {
 		sel.CooldownURL(1, "https://a.com")
 	}
 	// 清掉冷却，只保留低成功率记录
-	sel.mu.Lock()
-	delete(sel.cooldowns, urlKey{channelID: 1, url: "https://a.com"})
-	sel.mu.Unlock()
+	sh := sel.getShard(1)
+	sh.mu.Lock()
+	delete(sh.cooldowns, urlKey{channelID: 1, url: "https://a.com"})
+	sh.mu.Unlock()
 
 	// 没有好的已知 URL 时，canary 会提升 1 个 unknown 到首跳池，
 	// 剩余 unknown 作为最低优先级兜底追加到计划末尾。
@@ -305,9 +306,11 @@ func TestURLSelector_ExponentialBackoff(t *testing.T) {
 
 	key := urlKey{channelID: 1, url: "https://a.com"}
 
+	sh := sel.getShard(1)
+
 	// 第1次冷却: 10ms
 	sel.CooldownURL(1, "https://a.com")
-	state1 := sel.cooldowns[key]
+	state1 := sh.cooldowns[key] //nolint:gosec
 	if state1.consecutiveFails != 1 {
 		t.Errorf("expected 1 fail, got %d", state1.consecutiveFails)
 	}
@@ -315,7 +318,7 @@ func TestURLSelector_ExponentialBackoff(t *testing.T) {
 	// 等待冷却过期后再次冷却: 20ms
 	time.Sleep(15 * time.Millisecond)
 	sel.CooldownURL(1, "https://a.com")
-	state2 := sel.cooldowns[key]
+	state2 := sh.cooldowns[key]
 	if state2.consecutiveFails != 2 {
 		t.Errorf("expected 2 fails, got %d", state2.consecutiveFails)
 	}
@@ -364,6 +367,7 @@ func TestURLSelector_RecordLatencyClearsCooldownWindow(t *testing.T) {
 func TestURLSelector_GC_RemovesExpiredState(t *testing.T) {
 	sel := NewURLSelector()
 	now := time.Now()
+	sh := sel.getShard(1)
 
 	oldLatencyKey := urlKey{channelID: 1, url: "https://old-latency.com"}
 	freshLatencyKey := urlKey{channelID: 1, url: "https://fresh-latency.com"}
@@ -371,27 +375,27 @@ func TestURLSelector_GC_RemovesExpiredState(t *testing.T) {
 	expiredCooldownKey := urlKey{channelID: 1, url: "https://expired-cooldown.com"}
 	activeCooldownKey := urlKey{channelID: 1, url: "https://active-cooldown.com"}
 
-	sel.latencies[oldLatencyKey] = &ewmaValue{value: 120, lastSeen: now.Add(-25 * time.Hour)}
-	sel.latencies[freshLatencyKey] = &ewmaValue{value: 80, lastSeen: now.Add(-2 * time.Hour)}
-	sel.probeLatencies[oldProbeKey] = &ewmaValue{value: 50, lastSeen: now.Add(-25 * time.Hour)}
-	sel.cooldowns[expiredCooldownKey] = urlCooldownState{until: now.Add(-time.Minute), consecutiveFails: 2}
-	sel.cooldowns[activeCooldownKey] = urlCooldownState{until: now.Add(2 * time.Minute), consecutiveFails: 1}
+	sh.latencies[oldLatencyKey] = &ewmaValue{value: 120, lastSeen: now.Add(-25 * time.Hour)}
+	sh.latencies[freshLatencyKey] = &ewmaValue{value: 80, lastSeen: now.Add(-2 * time.Hour)}
+	sh.probeLatencies[oldProbeKey] = &ewmaValue{value: 50, lastSeen: now.Add(-25 * time.Hour)}
+	sh.cooldowns[expiredCooldownKey] = urlCooldownState{until: now.Add(-time.Minute), consecutiveFails: 2}
+	sh.cooldowns[activeCooldownKey] = urlCooldownState{until: now.Add(2 * time.Minute), consecutiveFails: 1}
 
 	sel.GC(24 * time.Hour)
 
-	if _, ok := sel.latencies[oldLatencyKey]; ok {
+	if _, ok := sh.latencies[oldLatencyKey]; ok {
 		t.Fatalf("expected expired latency to be removed")
 	}
-	if _, ok := sel.latencies[freshLatencyKey]; !ok {
+	if _, ok := sh.latencies[freshLatencyKey]; !ok {
 		t.Fatalf("expected fresh latency to be preserved")
 	}
-	if _, ok := sel.probeLatencies[oldProbeKey]; ok {
+	if _, ok := sh.probeLatencies[oldProbeKey]; ok {
 		t.Fatalf("expected expired probe latency to be removed")
 	}
-	if _, ok := sel.cooldowns[expiredCooldownKey]; ok {
+	if _, ok := sh.cooldowns[expiredCooldownKey]; ok {
 		t.Fatalf("expected expired cooldown to be removed")
 	}
-	if _, ok := sel.cooldowns[activeCooldownKey]; !ok {
+	if _, ok := sh.cooldowns[activeCooldownKey]; !ok {
 		t.Fatalf("expected active cooldown to be preserved")
 	}
 }
@@ -399,28 +403,29 @@ func TestURLSelector_GC_RemovesExpiredState(t *testing.T) {
 func TestURLSelector_RecordLatency_TriggersScheduledCleanup(t *testing.T) {
 	sel := NewURLSelector()
 	now := time.Now()
+	sh := sel.getShard(1)
 
 	staleKey := urlKey{channelID: 1, url: "https://stale.com"}
 	staleProbeKey := urlKey{channelID: 1, url: "https://stale-probe.com"}
 	expiredCooldownKey := urlKey{channelID: 1, url: "https://expired.com"}
-	sel.latencies[staleKey] = &ewmaValue{value: 100, lastSeen: now.Add(-48 * time.Hour)}
-	sel.probeLatencies[staleProbeKey] = &ewmaValue{value: 30, lastSeen: now.Add(-48 * time.Hour)}
-	sel.cooldowns[expiredCooldownKey] = urlCooldownState{until: now.Add(-time.Minute), consecutiveFails: 1}
+	sh.latencies[staleKey] = &ewmaValue{value: 100, lastSeen: now.Add(-48 * time.Hour)}
+	sh.probeLatencies[staleProbeKey] = &ewmaValue{value: 30, lastSeen: now.Add(-48 * time.Hour)}
+	sh.cooldowns[expiredCooldownKey] = urlCooldownState{until: now.Add(-time.Minute), consecutiveFails: 1}
 
 	// 强制下一次写路径触发清理
 	sel.cleanupInterval = time.Millisecond
 	sel.latencyMaxAge = 24 * time.Hour
-	sel.nextCleanup = now.Add(-time.Second)
+	sh.nextCleanup = now.Add(-time.Second)
 
 	sel.RecordLatency(1, "https://new.com", 10*time.Millisecond)
 
-	if _, ok := sel.latencies[staleKey]; ok {
+	if _, ok := sh.latencies[staleKey]; ok {
 		t.Fatalf("expected stale latency removed by scheduled cleanup")
 	}
-	if _, ok := sel.probeLatencies[staleProbeKey]; ok {
+	if _, ok := sh.probeLatencies[staleProbeKey]; ok {
 		t.Fatalf("expected stale probe removed by scheduled cleanup")
 	}
-	if _, ok := sel.cooldowns[expiredCooldownKey]; ok {
+	if _, ok := sh.cooldowns[expiredCooldownKey]; ok {
 		t.Fatalf("expected expired cooldown removed by scheduled cleanup")
 	}
 }
@@ -472,10 +477,11 @@ func TestURLSelector_ProbeURLs_TimeoutCoolsPendingURLs(t *testing.T) {
 		t.Fatalf("expected timed out URL to be cooled down")
 	}
 
-	sel.mu.RLock()
-	_, fastKnown := sel.probeLatencies[urlKey{channelID: 1, url: "https://fast.example"}]
-	_, slowKnown := sel.probeLatencies[urlKey{channelID: 1, url: "https://slow.example"}]
-	sel.mu.RUnlock()
+	probeSh := sel.getShard(1)
+	probeSh.mu.RLock()
+	_, fastKnown := probeSh.probeLatencies[urlKey{channelID: 1, url: "https://fast.example"}]
+	_, slowKnown := probeSh.probeLatencies[urlKey{channelID: 1, url: "https://slow.example"}]
+	probeSh.mu.RUnlock()
 
 	if !fastKnown {
 		t.Fatalf("expected fast URL latency seed recorded")
@@ -512,10 +518,11 @@ func TestURLSelector_ProbeURLs_SkipsSingleURL(t *testing.T) {
 	sel := NewURLSelector()
 	// 单URL不应触发探测
 	sel.ProbeURLs(context.Background(), 1, []string{"https://a.com"})
-	sel.mu.RLock()
-	defer sel.mu.RUnlock()
-	if len(sel.probeLatencies) != 0 {
-		t.Errorf("single URL should not trigger probe, got %d probe latencies", len(sel.probeLatencies))
+	skipSh := sel.getShard(1)
+	skipSh.mu.RLock()
+	defer skipSh.mu.RUnlock()
+	if len(skipSh.probeLatencies) != 0 {
+		t.Errorf("single URL should not trigger probe, got %d probe latencies", len(skipSh.probeLatencies))
 	}
 }
 
@@ -536,11 +543,12 @@ func TestURLSelector_ProbeURLs_InvalidURL(t *testing.T) {
 	// 无效URL应被冷却，不应panic
 	sel.ProbeURLs(context.Background(), 1, []string{"not-a-valid-url", "also-invalid"})
 
-	sel.mu.RLock()
-	defer sel.mu.RUnlock()
+	invSh := sel.getShard(1)
+	invSh.mu.RLock()
+	defer invSh.mu.RUnlock()
 	// 无效URL应该被冷却或至少不产生延迟数据
-	if len(sel.probeLatencies) != 0 {
-		t.Errorf("invalid URLs should not produce probe latency data, got %d", len(sel.probeLatencies))
+	if len(invSh.probeLatencies) != 0 {
+		t.Errorf("invalid URLs should not produce probe latency data, got %d", len(invSh.probeLatencies))
 	}
 }
 

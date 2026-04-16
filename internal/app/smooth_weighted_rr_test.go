@@ -303,14 +303,14 @@ func TestSmoothWeightedRR_Cleanup_RemovesOldStates(t *testing.T) {
 	rr.Select(channels, []int{1, 1})
 
 	key := rr.generateGroupKey(channels)
-	if rr.states[key] == nil {
+	if rr.getState(key) == nil {
 		t.Fatalf("expected state created for key %q", key)
 	}
 
-	rr.states[key].lastAccess = time.Now().Add(-time.Hour)
+	rr.getState(key).lastAccess = time.Now().Add(-time.Hour)
 	rr.Cleanup(30 * time.Minute)
 
-	if _, ok := rr.states[key]; ok {
+	if rr.getState(key) != nil {
 		t.Fatalf("expected state %q cleaned up", key)
 	}
 }
@@ -324,12 +324,12 @@ func TestSmoothWeightedRR_ResetAll_ClearsStates(t *testing.T) {
 	}
 	rr.Select(channels, []int{1, 1})
 
-	if len(rr.states) == 0 {
+	if rr.stateCount() == 0 {
 		t.Fatal("expected states non-empty after Select")
 	}
 
 	rr.ResetAll()
-	if len(rr.states) != 0 {
-		t.Fatalf("expected states cleared, got len=%d", len(rr.states))
+	if rr.stateCount() != 0 {
+		t.Fatalf("expected states cleared, got count=%d", rr.stateCount())
 	}
 }
