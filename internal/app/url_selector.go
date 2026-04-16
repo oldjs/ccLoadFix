@@ -67,15 +67,15 @@ type urlRequestCount struct {
 // 同一渠道的所有URL状态在同一个分片里，不同渠道互不竞争
 type urlShard struct {
 	mu                sync.RWMutex
-	latencies         map[urlKey]*ewmaValue          // 真实请求的 TTFB EWMA
-	probeLatencies    map[urlKey]*ewmaValue          // 探测出来的 RTT 种子
-	cooldowns         map[urlKey]urlCooldownState     // URL冷却
-	slowIsolations    map[urlKey]time.Time            // 慢TTFB隔离
-	requests          map[urlKey]*urlRequestCount     // 调用计数
+	latencies         map[urlKey]*ewmaValue               // 真实请求的 TTFB EWMA
+	probeLatencies    map[urlKey]*ewmaValue               // 探测出来的 RTT 种子
+	cooldowns         map[urlKey]urlCooldownState         // URL冷却
+	slowIsolations    map[urlKey]time.Time                // 慢TTFB隔离
+	requests          map[urlKey]*urlRequestCount         // 调用计数
 	affinities        map[modelAffinityKey]*affinityEntry // 模型亲和性
-	noThinkingBlklist map[urlModelKey]time.Time       // thinking黑名单
-	probing           map[urlKey]time.Time            // 正在探测的URL
-	nextCleanup       time.Time                       // 本分片下次清理时间
+	noThinkingBlklist map[urlModelKey]time.Time           // thinking黑名单
+	probing           map[urlKey]time.Time                // 正在探测的URL
+	nextCleanup       time.Time                           // 本分片下次清理时间
 }
 
 // URLSelector 基于EWMA延迟、成功率和模型亲和性选择最优URL
