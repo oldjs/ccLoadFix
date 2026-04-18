@@ -43,6 +43,11 @@ func (s *Server) applyCooldownDecision(
 		// 立即失效缓存，确保后续请求不会选到已冷却的渠道/Key
 		s.invalidateChannelRelatedCache(cfg.ID)
 
+		// 渠道级冷却时清除该渠道的所有亲和，防止后续请求继续往坏渠道发
+		if action == cooldown.ActionRetryChannel && s.channelAffinity != nil {
+			s.channelAffinity.ClearByChannel(cfg.ID)
+		}
+
 		// DB写入异步化：HandleError 在 worker 中重新分类+写入
 		s.queueCooldownWrite(cooldownWriteTask{input: in})
 	}
@@ -388,6 +393,11 @@ func (s *Server) handleProxySuccess(
 
 	// 立即失效缓存，确保后续请求感知冷却已清除
 	s.invalidateChannelRelatedCache(cfg.ID)
+
+	// 渠道亲和：成功后记录 model→channel，下次同 model 优先选这个渠道
+	if s.channelAffinity != nil {
+		s.channelAffinity.Set(actualModel, cfg.ID)
+	}
 
 	// Claude thinking 检测：Claude 渠道 + 请求带了 thinking 参数 + 响应没 thinking 块 → 黑名单
 	// 通过检查请求体判断用户是否要求了 thinking，避免误杀普通请求

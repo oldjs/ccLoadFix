@@ -69,10 +69,10 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 		return nil, err
 	}
 	if len(filtered) > 0 {
-		return filtered, nil
+		return s.applyChannelAffinity(filtered, model), nil
 	}
 
-	// 兜底：全量查询（用于“模糊匹配回退”以及最终“全冷却兜底”场景）
+	// 兜底：全量查询（用于”模糊匹配回退”以及最终”全冷却兜底”场景）
 	// 注意：此处不能以 len(channels)==0 作为是否回退的条件。
 	// 精确候选可能存在但全部在冷却/成本限额下不可用，这时仍需尝试模糊匹配补充候选。
 	var allCandidates []*modelpkg.Config
@@ -101,7 +101,7 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 		return nil, err
 	}
 	if len(filtered) > 0 {
-		return filtered, nil
+		return s.applyChannelAffinity(filtered, model), nil
 	}
 
 	// 最终兜底：如果候选存在但全部在冷却中，让全冷却兜底逻辑选择“最早恢复”的渠道。

@@ -198,6 +198,10 @@ func validateSettingValue(key, valueType, value string) error {
 			if intVal != LogRetentionDaysDisabled && (intVal < LogRetentionDaysMin || intVal > LogRetentionDaysMax) {
 				return fmt.Errorf("log_retention_days must be %d (永久) or %d-%d", LogRetentionDaysDisabled, LogRetentionDaysMin, LogRetentionDaysMax)
 			}
+		case "channel_affinity_ttl_seconds":
+			if intVal < 1 || intVal > 3600 {
+				return fmt.Errorf("channel_affinity_ttl_seconds must be 1-3600")
+			}
 		default:
 			if intVal < -1 {
 				return fmt.Errorf("value must be >= -1")

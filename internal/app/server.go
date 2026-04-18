@@ -43,7 +43,8 @@ type Server struct {
 	costCache       *CostCache            // 渠道每日成本缓存
 	statsCache      *StatsCache           // 统计结果缓存层
 	channelBalancer *SmoothWeightedRR     // 渠道负载均衡器（平滑加权轮询）
-	urlSelector     *URLSelector          // URL选择器（多URL场景的延迟追踪与冷却）
+	urlSelector      *URLSelector          // URL选择器（多URL场景的延迟追踪与冷却）
+	channelAffinity  *ChannelAffinity      // 渠道级软亲和（per-model记住上次成功的渠道）
 	client          *http.Client          // HTTP客户端
 	activeRequests  *activeRequestManager // 进行中请求（内存状态，不持久化）
 
@@ -208,6 +209,9 @@ func NewServer(store storage.Store) *Server {
 
 	// 初始化URL选择器（多URL场景：EWMA延迟追踪+URL级冷却）
 	s.urlSelector = NewURLSelector()
+
+	// 初始化渠道级软亲和（per-model记住上次成功的渠道，下次优先选它）
+	s.channelAffinity = NewChannelAffinity()
 
 	// 初始化健康度缓存（启动时读取配置，修改后重启生效）
 	defaultHealthCfg := model.DefaultHealthScoreConfig()
@@ -558,6 +562,8 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/metrics", s.HandleMetrics)
 		admin.GET("/stats", s.HandleStats)
 		admin.GET("/cooldown/stats", s.HandleCooldownStats)
+		admin.GET("/channel-affinity", s.HandleChannelAffinity)     // 渠道亲和状态
+		admin.DELETE("/channel-affinity", s.HandleClearChannelAffinity) // 清除所有渠道亲和
 		admin.GET("/models", s.HandleGetModels)
 
 		// API访问令牌管理
@@ -637,6 +643,15 @@ func (s *Server) stateCleanupLoop() {
 			// 避免渠道删除后计数器累积导致内存泄漏
 			if s.keySelector != nil {
 				s.keySelector.CleanupInactiveCounters(24 * time.Hour)
+			}
+
+			// 清理过期的渠道亲和条目
+			if s.channelAffinity != nil {
+				ttlSec := 60
+				if s.configService != nil {
+					ttlSec = s.configService.GetInt("channel_affinity_ttl_seconds", 60)
+				}
+				s.channelAffinity.Cleanup(time.Duration(ttlSec) * time.Second)
 			}
 		}
 	}
