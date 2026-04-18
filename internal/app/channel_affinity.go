@@ -131,9 +131,9 @@ func (s *Server) applyChannelAffinity(candidates []*modelpkg.Config, model strin
 	}
 
 	// 读取 TTL
-	ttlSec := 60
+	ttlSec := 600
 	if s.configService != nil {
-		ttlSec = s.configService.GetInt("channel_affinity_ttl_seconds", 60)
+		ttlSec = s.configService.GetInt("channel_affinity_ttl_seconds", 600)
 	}
 	if ttlSec <= 0 {
 		return candidates

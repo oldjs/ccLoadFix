@@ -16,9 +16,9 @@ func (s *Server) HandleChannelAffinity(c *gin.Context) {
 	}
 
 	// 读取 TTL 配置
-	ttlSec := 60
+	ttlSec := 600
 	if s.configService != nil {
-		ttlSec = s.configService.GetInt("channel_affinity_ttl_seconds", 60)
+		ttlSec = s.configService.GetInt("channel_affinity_ttl_seconds", 600)
 	}
 	ttl := time.Duration(ttlSec) * time.Second
 

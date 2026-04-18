@@ -10,7 +10,7 @@ import (
 
 func TestChannelAffinity_SetAndGet(t *testing.T) {
 	ca := NewChannelAffinity()
-	ttl := 60 * time.Second
+	ttl := 600 * time.Second
 
 	// 空查询
 	_, ok := ca.Get("claude-sonnet-4-20250514", ttl)
@@ -40,18 +40,18 @@ func TestChannelAffinity_TTLExpiry(t *testing.T) {
 	ca.mu.Lock()
 	ca.affinities["gpt-4o"] = &channelAffinityEntry{
 		channelID: 10,
-		updatedAt: time.Now().Add(-2 * time.Minute),
+		updatedAt: time.Now().Add(-11 * time.Minute),
 	}
 	ca.mu.Unlock()
 
-	// 用 60 秒 TTL 查，应该过期
-	_, ok := ca.Get("gpt-4o", 60*time.Second)
+	// 用 600 秒 TTL 查，应该过期（11分钟 > 10分钟）
+	_, ok := ca.Get("gpt-4o", 600*time.Second)
 	if ok {
 		t.Fatal("expected TTL expiry, but got affinity")
 	}
 
-	// 用 5 分钟 TTL 查，应该还在
-	id, ok := ca.Get("gpt-4o", 5*time.Minute)
+	// 用 15 分钟 TTL 查，应该还在
+	id, ok := ca.Get("gpt-4o", 15*time.Minute)
 	if !ok || id != 10 {
 		t.Fatalf("expected channelID=10 with longer TTL, got %d ok=%v", id, ok)
 	}
@@ -59,7 +59,7 @@ func TestChannelAffinity_TTLExpiry(t *testing.T) {
 
 func TestChannelAffinity_ClearByModel(t *testing.T) {
 	ca := NewChannelAffinity()
-	ttl := 60 * time.Second
+	ttl := 600 * time.Second
 
 	ca.Set("model-a", 1)
 	ca.Set("model-b", 2)
@@ -87,7 +87,7 @@ func TestChannelAffinity_ClearByModel(t *testing.T) {
 
 func TestChannelAffinity_ClearByChannel(t *testing.T) {
 	ca := NewChannelAffinity()
-	ttl := 60 * time.Second
+	ttl := 600 * time.Second
 
 	// 多个 model 指向同一个 channel
 	ca.Set("model-a", 5)
@@ -120,17 +120,17 @@ func TestChannelAffinity_Cleanup(t *testing.T) {
 	ca.mu.Lock()
 	ca.affinities["stale"] = &channelAffinityEntry{
 		channelID: 2,
-		updatedAt: time.Now().Add(-5 * time.Minute),
+		updatedAt: time.Now().Add(-11 * time.Minute),
 	}
 	ca.mu.Unlock()
 
-	ca.Cleanup(60 * time.Second)
+	ca.Cleanup(600 * time.Second)
 
-	_, ok := ca.Get("fresh", 60*time.Second)
+	_, ok := ca.Get("fresh", 600*time.Second)
 	if !ok {
 		t.Fatal("fresh entry should survive cleanup")
 	}
-	_, ok = ca.Get("stale", 5*time.Minute)
+	_, ok = ca.Get("stale", 15*time.Minute)
 	if ok {
 		t.Fatal("stale entry should be cleaned up")
 	}
@@ -138,16 +138,16 @@ func TestChannelAffinity_Cleanup(t *testing.T) {
 
 func TestChannelAffinity_ListAll(t *testing.T) {
 	ca := NewChannelAffinity()
-	ttl := 60 * time.Second
+	ttl := 600 * time.Second
 
 	ca.Set("model-x", 1)
 	ca.Set("model-y", 2)
 
-	// 加一个过期的
+	// 加一个过期的（11分钟 > 10分钟TTL）
 	ca.mu.Lock()
 	ca.affinities["expired"] = &channelAffinityEntry{
 		channelID: 3,
-		updatedAt: time.Now().Add(-2 * time.Minute),
+		updatedAt: time.Now().Add(-11 * time.Minute),
 	}
 	ca.mu.Unlock()
 
@@ -169,7 +169,7 @@ func TestChannelAffinity_ListAll(t *testing.T) {
 
 func TestChannelAffinity_Concurrent(t *testing.T) {
 	ca := NewChannelAffinity()
-	ttl := 60 * time.Second
+	ttl := 600 * time.Second
 
 	var wg sync.WaitGroup
 	// 并发写
