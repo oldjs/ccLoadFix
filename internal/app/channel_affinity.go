@@ -25,12 +25,13 @@ type channelAffinityEntry struct {
 
 // ChannelAffinityStatus admin API 返回的亲和状态
 type ChannelAffinityStatus struct {
-	Model     string  `json:"model"`
-	ChannelID int64   `json:"channel_id"`
-	AgeMs     int64   `json:"age_ms"`      // 距离建立多久（毫秒）
-	TTLMs     int64   `json:"ttl_remain_ms"` // 剩余 TTL（毫秒）
+	Model     string `json:"model"`
+	ChannelID int64  `json:"channel_id"`
+	AgeMs     int64  `json:"age_ms"`        // 距离建立多久（毫秒）
+	TTLMs     int64  `json:"ttl_remain_ms"` // 剩余 TTL（毫秒）
 }
 
+// NewChannelAffinity 创建一个新的渠道亲和实例
 func NewChannelAffinity() *ChannelAffinity {
 	return &ChannelAffinity{
 		affinities: make(map[string]*channelAffinityEntry),
