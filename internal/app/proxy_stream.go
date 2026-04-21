@@ -63,11 +63,33 @@ func getStreamBufPool(bufSize int) *sync.Pool {
 	return &streamBufPool32K
 }
 
-func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.ResponseWriter, onData func([]byte) error, bufSize int) error {
+// streamTransformer 在写入客户端前对数据做就地变换（如截断超长 ID 字段）
+// 返回 nil 表示当前 chunk 全部 buffer 起来不输出，后续 chunk 触发输出
+// Flush 在 EOF 时调用，吐出残留 buffer
+type streamTransformer interface {
+	Transform([]byte) []byte
+	Flush() []byte
+}
+
+func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.ResponseWriter, onData func([]byte) error, transform streamTransformer, bufSize int) error {
 	pool := getStreamBufPool(bufSize)
 	bp := pool.Get().(*[]byte)
 	buf := *bp
 	defer pool.Put(bp)
+
+	flushTo := func(payload []byte) error {
+		if len(payload) == 0 {
+			return nil
+		}
+		if _, writeErr := dst.Write(payload); writeErr != nil {
+			return writeErr
+		}
+		if flusher, ok := dst.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		return nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -85,15 +107,24 @@ func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.Respo
 					_ = hookErr // 钩子错误不中断流传输（容错设计）
 				}
 			}
-			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
-				return writeErr
+			payload := buf[:n]
+			if transform != nil {
+				payload = transform.Transform(payload)
 			}
-			if flusher, ok := dst.(http.Flusher); ok {
-				flusher.Flush()
+			if writeErr := flushTo(payload); writeErr != nil {
+				return writeErr
 			}
 		}
 		if err != nil {
 			if err == io.EOF {
+				// EOF：吐出 transformer 残留
+				if transform != nil {
+					if tail := transform.Flush(); len(tail) > 0 {
+						if writeErr := flushTo(tail); writeErr != nil {
+							return writeErr
+						}
+					}
+				}
 				return nil
 			}
 			// [FIX] 检查 context 是否在 Read 期间被取消
@@ -112,7 +143,7 @@ func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.Respo
 // 简化实现：直接循环读取与写入，避免为每次读取创建goroutine导致泄漏
 // 首字节超时由 requestContext 统一管控（firstByteTimeout + context.AfterFunc 关闭 body），此处不再重复实现
 func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter, onData func([]byte) error) error {
-	return streamCopyWithBufferSize(ctx, src, dst, onData, StreamBufferSize)
+	return streamCopyWithBufferSize(ctx, src, dst, onData, nil, StreamBufferSize)
 }
 
 // streamCopySSE SSE专用流式复制（使用小缓冲区优化延迟）
@@ -120,5 +151,11 @@ func streamCopy(ctx context.Context, src io.Reader, dst http.ResponseWriter, onD
 // [INFO] 支持数据钩子（2025-11）：允许SSE usage解析器增量处理数据流
 // 设计原则：SSE事件通常200B-2KB，小缓冲区避免事件积压
 func streamCopySSE(ctx context.Context, src io.Reader, dst http.ResponseWriter, onData func([]byte) error) error {
-	return streamCopyWithBufferSize(ctx, src, dst, onData, SSEBufferSize)
+	return streamCopyWithBufferSize(ctx, src, dst, onData, nil, SSEBufferSize)
+}
+
+// streamCopyWithTransform 带数据变换的流式复制（用于 ID 截断等场景）
+// transform 可为 nil
+func streamCopyWithTransform(ctx context.Context, src io.Reader, dst http.ResponseWriter, onData func([]byte) error, transform streamTransformer, bufSize int) error {
+	return streamCopyWithBufferSize(ctx, src, dst, onData, transform, bufSize)
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	neturl "net/url"
 	"strconv"
@@ -415,6 +416,16 @@ func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestConte
 			if modifiedBody, err := sonic.Marshal(reqData); err == nil {
 				bodyToSend = modifiedBody
 			}
+		}
+	}
+
+	// 截断超长 ID 字段（仅对 openai/codex 渠道）
+	// 对齐参考脚本 TrunCationProxy.py 行为：call_id / tool_call_id / 裸 id 超 64 字符截到 64
+	if shouldTruncateIDsForChannel(cfg.GetChannelType()) {
+		if truncated, n := util.TruncateLongIDs(bodyToSend, util.DefaultIDMaxLen); n > 0 {
+			log.Printf("[INFO] [ID截断] 阶段=request 渠道=%s(ID=%d) 模型=%s 截断字段数=%d",
+				cfg.GetChannelType(), cfg.ID, actualModel, n)
+			bodyToSend = truncated
 		}
 	}
 

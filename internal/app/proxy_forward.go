@@ -170,13 +170,66 @@ func (s *Server) handleErrorResponse(
 	}, duration, nil
 }
 
+// shouldTruncateIDsForChannel 判断该渠道类型是否需要做超长 ID 截断
+// 仅 openai / codex 渠道遇到过 call_id / tool_call_id / tool_calls[].id 超 64 字符的问题
+func shouldTruncateIDsForChannel(channelType string) bool {
+	switch util.NormalizeChannelType(channelType) {
+	case util.ChannelTypeOpenAI, util.ChannelTypeCodex:
+		return true
+	default:
+		return false
+	}
+}
+
+// makeIDTruncatorFor 根据渠道类型构造截断器，不需要截断时返回 nil
+func makeIDTruncatorFor(channelType string) streamTransformer {
+	if !shouldTruncateIDsForChannel(channelType) {
+		return nil
+	}
+	return &loggingIDTruncator{
+		inner:       util.NewIDTruncator(util.DefaultIDMaxLen),
+		channelType: channelType,
+	}
+}
+
+// loggingIDTruncator 包一层 util.IDTruncator，命中截断时打日志
+// 实现 streamTransformer 接口
+type loggingIDTruncator struct {
+	inner       *util.IDTruncator
+	channelType string
+	lastLogged  int // 上次打印日志时的累计计数
+}
+
+func (l *loggingIDTruncator) Transform(chunk []byte) []byte {
+	out := l.inner.Transform(chunk)
+	l.maybeLog("response")
+	return out
+}
+
+func (l *loggingIDTruncator) Flush() []byte {
+	out := l.inner.Flush()
+	l.maybeLog("response")
+	return out
+}
+
+func (l *loggingIDTruncator) maybeLog(stage string) {
+	now := l.inner.TruncatedCount()
+	if now > l.lastLogged {
+		log.Printf("[INFO] [ID截断] 阶段=%s 渠道类型=%s 本次新增截断字段数=%d 累计=%d",
+			stage, l.channelType, now-l.lastLogged, now)
+		l.lastLogged = now
+	}
+}
+
 // streamAndParseResponse 根据Content-Type选择合适的流式传输策略并解析usage
 // 返回: (usageParser, streamErr)
 func streamAndParseResponse(ctx context.Context, body io.ReadCloser, w http.ResponseWriter, contentType string, channelType string, isStreaming bool) (usageParser, error) {
+	transform := makeIDTruncatorFor(channelType)
+
 	// SSE流式响应
 	if strings.Contains(contentType, "text/event-stream") {
 		parser := newSSEUsageParser(channelType)
-		streamErr := streamCopySSE(ctx, body, w, parser.Feed)
+		streamErr := streamCopyWithTransform(ctx, body, w, parser.Feed, transform, SSEBufferSize)
 		return parser, streamErr
 	}
 
@@ -187,17 +240,17 @@ func streamAndParseResponse(ctx context.Context, body io.ReadCloser, w http.Resp
 
 		if looksLikeSSE(probe) {
 			parser := newSSEUsageParser(channelType)
-			sseErr := streamCopySSE(ctx, io.NopCloser(reader), w, parser.Feed)
+			sseErr := streamCopyWithTransform(ctx, io.NopCloser(reader), w, parser.Feed, transform, SSEBufferSize)
 			return parser, sseErr
 		}
 		parser := newJSONUsageParser(channelType)
-		copyErr := streamCopy(ctx, io.NopCloser(reader), w, parser.Feed)
+		copyErr := streamCopyWithTransform(ctx, io.NopCloser(reader), w, parser.Feed, transform, StreamBufferSize)
 		return parser, copyErr
 	}
 
 	// 非SSE响应：边转发边缓存
 	parser := newJSONUsageParser(channelType)
-	copyErr := streamCopy(ctx, body, w, parser.Feed)
+	copyErr := streamCopyWithTransform(ctx, body, w, parser.Feed, transform, StreamBufferSize)
 	return parser, copyErr
 }
 
