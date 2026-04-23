@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/x-icon" href="/web/favicon.ico">
+  <link rel="apple-touch-icon" href="/web/apple-touch-icon.png">
+  <link rel="manifest" href="/web/manifest.json">
+  <meta name="theme-color" content="#3b82f6">
+  <title data-i18n="affinity.title">路由亲和 - Claude Code & Codex Proxy</title>
+  <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
+  <script defer src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/locales/en.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/i18n.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/affinity.js?v=__VERSION__"></script>
+  <style>
+    .affinity-toolbar-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 8px 12px;
+    }
+    .affinity-toolbar-row .affinity-updated {
+      margin-left: auto;
+      font-size: 12px;
+      color: var(--text-secondary, #6b7280);
+    }
+    .affinity-toolbar-row .affinity-autorefresh {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      user-select: none;
+      font-size: 13px;
+    }
+    .affinity-section-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 12px 0 12px;
+      flex-wrap: wrap;
+    }
+    .affinity-section-header .section-title {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    .affinity-section-desc {
+      font-size: 12px;
+      color: var(--text-secondary, #6b7280);
+    }
+    .affinity-section-header .btn {
+      margin-left: auto;
+    }
+    .affinity-empty {
+      text-align: center;
+      color: var(--text-secondary, #6b7280);
+      padding: 16px;
+      font-size: 13px;
+    }
+    .warm-url-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .warm-url-list li {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      font-family: var(--font-mono, monospace);
+      font-size: 12px;
+    }
+    .warm-url-list li .warm-url-meta {
+      font-family: inherit;
+      font-size: 11px;
+      color: var(--text-secondary, #6b7280);
+    }
+    .warm-url-list li.warm-url-primary::before {
+      content: "★";
+      color: #f59e0b;
+      font-size: 11px;
+    }
+    .warm-url-list li.warm-url-secondary::before {
+      content: "·";
+      color: var(--text-secondary, #9ca3af);
+    }
+    .affinity-cell-mono {
+      font-family: var(--font-mono, monospace);
+      font-size: 12px;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div class="app-container">
+    <main class="main-content">
+      <div class="content-area">
+        <section class="glass-card mb-4">
+          <div class="affinity-toolbar-row">
+            <button id="affinity-refresh-btn" class="btn btn-secondary" data-i18n="affinity.refresh">刷新</button>
+            <label class="affinity-autorefresh">
+              <input type="checkbox" id="affinity-autorefresh" />
+              <span data-i18n="affinity.autoRefresh">自动刷新（5秒）</span>
+            </label>
+            <span class="affinity-updated" id="affinity-updated"></span>
+          </div>
+        </section>
+
+        <section class="glass-card mb-6">
+          <div class="affinity-section-header">
+            <h2 class="section-title" data-i18n="affinity.channelTitle">渠道亲和</h2>
+            <span class="affinity-section-desc" data-i18n="affinity.channelDesc">同一个 model 粘到上次成功的渠道</span>
+            <button id="clear-channel-affinity-btn" class="btn btn-secondary" data-i18n="affinity.clearChannel">清除全部</button>
+          </div>
+          <div class="table-container">
+            <table class="modern-table">
+              <thead>
+                <tr>
+                  <th data-i18n="affinity.colModel">模型</th>
+                  <th data-i18n="affinity.colChannel">渠道</th>
+                  <th data-i18n="affinity.colAge">已存活</th>
+                  <th data-i18n="affinity.colTTL">剩余 TTL</th>
+                </tr>
+              </thead>
+              <tbody id="channel-affinity-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="glass-card mb-6">
+          <div class="affinity-section-header">
+            <h2 class="section-title" data-i18n="affinity.urlTitle">URL 亲和</h2>
+            <span class="affinity-section-desc" data-i18n="affinity.urlDesc">同一个 (渠道, model) 粘到上次成功的上游 URL</span>
+          </div>
+          <div class="table-container">
+            <table class="modern-table">
+              <thead>
+                <tr>
+                  <th data-i18n="affinity.colChannel">渠道</th>
+                  <th data-i18n="affinity.colModel">模型</th>
+                  <th data-i18n="affinity.colURL">URL</th>
+                  <th data-i18n="affinity.colAge">已存活</th>
+                </tr>
+              </thead>
+              <tbody id="url-affinity-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="glass-card mb-6">
+          <div class="affinity-section-header">
+            <h2 class="section-title" data-i18n="affinity.warmTitle">URL Warm</h2>
+            <span class="affinity-section-desc" data-i18n="affinity.warmDesc">主亲和失效时的首跳备选（最多 3 个，新→旧）</span>
+          </div>
+          <div class="table-container">
+            <table class="modern-table">
+              <thead>
+                <tr>
+                  <th data-i18n="affinity.colChannel">渠道</th>
+                  <th data-i18n="affinity.colModel">模型</th>
+                  <th data-i18n="affinity.colWarmURLs">候选 URL</th>
+                </tr>
+              </thead>
+              <tbody id="url-warm-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

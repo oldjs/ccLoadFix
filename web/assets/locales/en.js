@@ -69,6 +69,7 @@ window.I18N_LOCALES['en'] = {
   'nav.stats': 'Statistics',
   'nav.trend': 'Trends',
   'nav.logs': 'Logs',
+  'nav.affinity': 'Routing Affinity',
   'nav.modelTest': 'Model Test',
   'nav.settings': 'Settings',
   'nav.githubRepo': 'GitHub Repository',
@@ -1091,5 +1092,34 @@ window.I18N_LOCALES['en'] = {
   'channels.import.exportHttpFailed': 'Export failed (HTTP {status})',
   'channels.import.summary': 'Import complete: {created} created, {updated} updated, {skipped} skipped',
   'channels.import.moreErrors': ' and {count} more records',
-  'channels.import.partialFailed': 'Some records failed: {preview}{extra}'
+  'channels.import.partialFailed': 'Some records failed: {preview}{extra}',
+
+  // ============================================================
+  // Routing Affinity
+  // ============================================================
+  'affinity.title': 'Routing Affinity - Claude Code & Codex Proxy',
+  'affinity.refresh': 'Refresh',
+  'affinity.autoRefresh': 'Auto refresh (5s)',
+  'affinity.updatedAt': 'Updated at {time}',
+  'affinity.channelTitle': 'Channel Affinity',
+  'affinity.channelDesc': 'Stick a model to the last successful channel',
+  'affinity.urlTitle': 'URL Affinity',
+  'affinity.urlDesc': 'Stick a (channel, model) pair to the last successful upstream URL',
+  'affinity.warmTitle': 'URL Warm List',
+  'affinity.warmDesc': 'First-hop fallback when primary affinity lapses (up to 3, newest first)',
+  'affinity.colModel': 'Model',
+  'affinity.colChannel': 'Channel',
+  'affinity.colURL': 'URL',
+  'affinity.colAge': 'Age',
+  'affinity.colTTL': 'TTL Remaining',
+  'affinity.colWarmURLs': 'Candidate URLs',
+  'affinity.warmSlotMeta': 'age {age} · {ttl} left',
+  'affinity.clearChannel': 'Clear All',
+  'affinity.confirmClearChannel': 'Clear all channel affinities?',
+  'affinity.clearedChannel': 'All channel affinities cleared',
+  'affinity.clearFailed': 'Clear failed',
+  'affinity.loadFailed': 'Load failed',
+  'affinity.emptyChannel': 'No channel affinity entries',
+  'affinity.emptyURL': 'No URL affinity entries',
+  'affinity.emptyWarm': 'No warm list entries'
 };

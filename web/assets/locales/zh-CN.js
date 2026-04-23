@@ -69,6 +69,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'nav.stats': '调用统计',
   'nav.trend': '请求趋势',
   'nav.logs': '日志',
+  'nav.affinity': '路由亲和',
   'nav.modelTest': '模型测试',
   'nav.settings': '设置',
   'nav.githubRepo': 'GitHub仓库',
@@ -1091,5 +1092,34 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.import.exportHttpFailed': '导出失败 (HTTP {status})',
   'channels.import.summary': '导入完成：新增 {created}，更新 {updated}，跳过 {skipped}',
   'channels.import.moreErrors': ' 等{count}条记录',
-  'channels.import.partialFailed': '部分记录导入失败：{preview}{extra}'
+  'channels.import.partialFailed': '部分记录导入失败：{preview}{extra}',
+
+  // ============================================================
+  // 路由亲和（Affinity）
+  // ============================================================
+  'affinity.title': '路由亲和 - Claude Code & Codex Proxy',
+  'affinity.refresh': '刷新',
+  'affinity.autoRefresh': '自动刷新（5秒）',
+  'affinity.updatedAt': '更新于 {time}',
+  'affinity.channelTitle': '渠道亲和',
+  'affinity.channelDesc': '同一个 model 粘到上次成功的渠道',
+  'affinity.urlTitle': 'URL 亲和',
+  'affinity.urlDesc': '同一个 (渠道, model) 粘到上次成功的上游 URL',
+  'affinity.warmTitle': 'URL Warm',
+  'affinity.warmDesc': '主亲和失效时的首跳备选（最多 3 个，新→旧）',
+  'affinity.colModel': '模型',
+  'affinity.colChannel': '渠道',
+  'affinity.colURL': 'URL',
+  'affinity.colAge': '已存活',
+  'affinity.colTTL': '剩余 TTL',
+  'affinity.colWarmURLs': '候选 URL',
+  'affinity.warmSlotMeta': '存活 {age} · 剩 {ttl}',
+  'affinity.clearChannel': '清除全部',
+  'affinity.confirmClearChannel': '确认清除所有渠道亲和？',
+  'affinity.clearedChannel': '已清除所有渠道亲和',
+  'affinity.clearFailed': '清除失败',
+  'affinity.loadFailed': '加载失败',
+  'affinity.emptyChannel': '暂无渠道亲和',
+  'affinity.emptyURL': '暂无 URL 亲和',
+  'affinity.emptyWarm': '暂无 warm 备选'
 };

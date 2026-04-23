@@ -43,3 +43,31 @@ func (s *Server) HandleClearChannelAffinity(c *gin.Context) {
 
 	RespondJSON(c, http.StatusOK, gin.H{"message": "all channel affinities cleared"})
 }
+
+// HandleURLAffinity 返回所有 URL 级亲和条目（跨渠道扫所有分片）
+// GET /admin/url-affinity
+func (s *Server) HandleURLAffinity(c *gin.Context) {
+	if s.urlSelector == nil {
+		RespondJSON(c, http.StatusOK, []URLAffinityStatus{})
+		return
+	}
+	list := s.urlSelector.ListAllAffinities()
+	if list == nil {
+		list = []URLAffinityStatus{}
+	}
+	RespondJSON(c, http.StatusOK, list)
+}
+
+// HandleURLWarm 返回所有 (渠道, 模型) 的 warm 备选列表
+// GET /admin/url-warm
+func (s *Server) HandleURLWarm(c *gin.Context) {
+	if s.urlSelector == nil {
+		RespondJSON(c, http.StatusOK, []URLWarmStatus{})
+		return
+	}
+	list := s.urlSelector.ListAllWarms()
+	if list == nil {
+		list = []URLWarmStatus{}
+	}
+	RespondJSON(c, http.StatusOK, list)
+}
