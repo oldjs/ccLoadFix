@@ -545,7 +545,7 @@ func TestPickCrossChannelWarmBoost_EmptyModel(t *testing.T) {
 }
 
 // TestApplyCrossChannelWarmBoost_Probabilistic 采样 swap 的概率分布在合理范围内
-// 强档 50% → 200 次中应该在 80-120 次之间（95% 置信区间约 ±2σ）
+// 强档 75% → 400 次中期望 300，容忍区间 60%-90% 避免 flaky
 func TestApplyCrossChannelWarmBoost_Probabilistic(t *testing.T) {
 	s := &Server{
 		channelAffinity: NewChannelAffinity(),
@@ -567,8 +567,8 @@ func TestApplyCrossChannelWarmBoost_Probabilistic(t *testing.T) {
 		}
 	}
 
-	// 强档 50% → 期望 200，容忍 ±50 (≈ ±5σ 宽松边界，避免 flaky)
-	minSwap, maxSwap := trials*3/10, trials*7/10
+	// 强档 75% → 期望 300，宽松到 60%-90% 避免 flaky（≈ ±7σ）
+	minSwap, maxSwap := trials*6/10, trials*9/10
 	if swapped < minSwap || swapped > maxSwap {
 		t.Fatalf("swap rate out of range: got %d/%d (expected %d-%d)", swapped, trials, minSwap, maxSwap)
 	}

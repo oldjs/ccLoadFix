@@ -179,14 +179,14 @@ func (s *Server) applyChannelAffinity(candidates []*modelpkg.Config, model strin
 // warm boost 的 freshness 窗口与采样概率。
 // 选值依据：
 //   - 窗口上限 30min 对齐 warmEntryTTL：原始 warm 里还没过期的 slot 都能作为软兜底依据
-//   - 10min 内视为"强信号"（最近刚成功过），10-30min 视为"弱信号"（还在 TTL 内但不算很新）
+//   - 15min 内视为"强信号"（最近刚成功过），15-30min 视为"弱信号"（还在 TTL 内但不算很新）
 //   - 超过 30min 的 slot 直接丢弃，不吃老数据
-//   - 概率分档等价于"软乘数"，同时保留 SmoothWeightedRR 的轮询公平性
+//   - 强档概率 75%：保留 25% 公平兜底，避免回声/赢者通吃；不做硬切，warm 只是间接信号
 //   - URL 是否在冷却/慢隔离由 GetFreshWarmURL 内联检查，避免拿到已确认坏掉的上游
 const (
-	warmBoostWindowStrong = 10 * time.Minute
+	warmBoostWindowStrong = 15 * time.Minute
 	warmBoostWindowWeak   = 30 * time.Minute
-	warmBoostProbStrong   = 0.5  // 强候选 50% 概率提权
+	warmBoostProbStrong   = 0.75 // 强候选 75% 概率提权，留 25% 给 SmoothWeightedRR
 	warmBoostProbWeak     = 0.25 // 弱候选 25% 概率提权
 )
 
