@@ -73,6 +73,7 @@ type urlShard struct {
 	slowIsolations    map[urlKey]time.Time                // 慢TTFB隔离
 	requests          map[urlKey]*urlRequestCount         // 调用计数
 	affinities        map[modelAffinityKey]*affinityEntry // 模型亲和性
+	warms             map[modelAffinityKey]*warmEntry     // 模型 warm 备选（主亲和失效时的首跳候选）
 	noThinkingBlklist map[urlModelKey]time.Time           // thinking黑名单
 	probing           map[urlKey]time.Time                // 正在探测的URL
 	nextCleanup       time.Time                           // 本分片下次清理时间
@@ -123,6 +124,7 @@ func initShard(sh *urlShard) {
 	sh.slowIsolations = make(map[urlKey]time.Time)
 	sh.requests = make(map[urlKey]*urlRequestCount)
 	sh.affinities = make(map[modelAffinityKey]*affinityEntry)
+	sh.warms = make(map[modelAffinityKey]*warmEntry)
 	sh.noThinkingBlklist = make(map[urlModelKey]time.Time)
 	sh.probing = make(map[urlKey]time.Time)
 }
@@ -199,6 +201,9 @@ func (s *URLSelector) gcShard(sh *urlShard, now time.Time, maxAge time.Duration)
 			delete(sh.noThinkingBlklist, key)
 		}
 	}
+
+	// 清理全部过期的 warm 备选（所有 slot 都超 TTL）
+	gcWarms(sh, now)
 }
 
 // maybeCleanupShard 检查分片是否需要清理（调用方已持有写锁）
@@ -271,6 +276,9 @@ func (s *URLSelector) PruneChannel(channelID int64, keepURLs []string) {
 			}
 		}
 	}
+
+	// warm 备选跟着 URL 变更剔除已删除的 URL
+	pruneWarmsForChannel(sh, channelID, keep)
 }
 
 // RemoveChannel 移除指定渠道的全部 URL 状态（含亲和性）。
@@ -317,6 +325,9 @@ func (s *URLSelector) RemoveChannel(channelID int64) {
 			delete(sh.noThinkingBlklist, key)
 		}
 	}
+
+	// 清理 warm 备选
+	removeWarmsForChannel(sh, channelID)
 }
 
 // recordSuccessInShard 记录成功（调用方已持有写锁）
@@ -429,12 +440,16 @@ func (s *URLSelector) RecordModelNotFound(channelID int64, rawURL string, thresh
 		cd.until = now.Add(duration)
 		sh.cooldowns[key] = cd
 		rc.failure++
+		// 累计"没这个模型"达到阈值进冷却，同步剥离 warm
+		removeWarmURLInChannel(sh, channelID, rawURL)
 		return true
 	}
 	return false
 }
 
-// SetModelAffinity 记录模型亲和性
+// SetModelAffinity 记录模型亲和性，同一临界区内顺带刷新 warm 备选。
+// warm 写路径内嵌进来，省一次锁；low-latency guard 由调用方在 SetModelAffinity
+// 之前过滤，warm 自然继承 guard 保护。
 func (s *URLSelector) SetModelAffinity(channelID int64, model, rawURL string) {
 	if model == "" || rawURL == "" {
 		return
@@ -445,10 +460,13 @@ func (s *URLSelector) SetModelAffinity(channelID int64, model, rawURL string) {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 
+	now := time.Now()
 	sh.affinities[ak] = &affinityEntry{
 		url:      rawURL,
-		lastUsed: time.Now(),
+		lastUsed: now,
 	}
+	// 刷入 warm list 作为主亲和失效时的首跳候选
+	pushWarmInShard(sh, ak, rawURL, now)
 }
 
 // ClearModelAffinity 清除模型亲和性（URL失败时调用）
@@ -500,6 +518,8 @@ func (s *URLSelector) MarkNoThinking(channelID int64, rawURL, model string) {
 	if aff, ok := sh.affinities[ak]; ok && aff.url == rawURL {
 		delete(sh.affinities, ak)
 	}
+	// 黑名单是 (URL, model) 粒度，只清这一对的 warm，别误伤其他 model
+	removeWarmURLForModelOnly(sh, ak, rawURL)
 }
 
 // IsNoThinking 检查某URL对某模型是否在 thinking 黑名单中
@@ -587,6 +607,9 @@ func (s *URLSelector) SuspectLowLatencyCooldown(channelID int64, rawURL string, 
 		cd.until = until
 	}
 	sh.cooldowns[key] = cd
+
+	// URL 被低延迟守卫隔离了，同步从 warm 里摘出去
+	removeWarmURLInChannel(sh, channelID, rawURL)
 }
 
 // CooldownURL 对URL施加指数退避冷却
@@ -619,6 +642,9 @@ func (s *URLSelector) CooldownURL(channelID int64, url string) {
 	} else {
 		sh.requests[key] = &urlRequestCount{failure: 1}
 	}
+
+	// URL 进冷却，从全部 model 的 warm 里剥掉，避免下次又被选为首跳
+	removeWarmURLInChannel(sh, channelID, url)
 }
 
 // IsCooledDown 检查URL是否在冷却中

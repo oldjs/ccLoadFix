@@ -35,6 +35,8 @@ type selectorCandidate struct {
 	noThinkingBlocked bool
 	cooled            bool
 	affinity          bool
+	// warm 主亲和失效时的首跳候选标记。affinity 未命中时由 markWarmCandidate 打上。
+	warm bool
 }
 
 func normalizeSelectorLatencyMS(ms float64) float64 {
@@ -295,22 +297,23 @@ func pickCanaryCandidate(candidates []selectorCandidate) selectorCandidate {
 	return weightedRandomCandidate(candidates)
 }
 
-// markAffinity 标记亲和性候选（调用方已持有读锁）
-func markAffinity(sh *urlShard, channelID int64, model string, candidates []selectorCandidate) {
+// markAffinity 标记亲和性候选（调用方已持有读锁）。返回是否命中，便于上层决定是否再尝试 warm 备选。
+func markAffinity(sh *urlShard, channelID int64, model string, candidates []selectorCandidate) bool {
 	if model == "" {
-		return
+		return false
 	}
 	ak := modelAffinityKey{channelID: channelID, model: model}
 	aff, ok := sh.affinities[ak]
 	if !ok || aff == nil || aff.url == "" {
-		return
+		return false
 	}
 	for i := range candidates {
 		if candidates[i].url == aff.url {
 			candidates[i].affinity = true
-			return
+			return true
 		}
 	}
+	return false
 }
 
 func appendCanaryIfNeeded(ordered []selectorCandidate, primary []selectorCandidate, unknown []selectorCandidate) []selectorCandidate {
@@ -337,10 +340,32 @@ func buildPlannedOrder(primary []selectorCandidate) []selectorCandidate {
 	if len(primary) == 0 {
 		return nil
 	}
-	first := weightedRandomCandidate(primary)
+	first := pickFirstHop(primary)
 	ordered := []selectorCandidate{first}
 	ordered = append(ordered, sortCandidatesByScore(removeCandidateByURL(primary, first.url))...)
 	return ordered
+}
+
+// pickFirstHop 选首跳：
+// 1) 有 affinity 命中 → 维持原行为（weightedRandomCandidate 内部 1.5x 乘数自然偏向 affinity）
+// 2) 无 affinity 但有 warm 命中 → 硬选 warm，避免主亲和刚失效时靠加权随机抽到次优 URL
+// 3) 都没有 → 原加权随机
+func pickFirstHop(primary []selectorCandidate) selectorCandidate {
+	hasAffinity := false
+	var warmHit *selectorCandidate
+	for i := range primary {
+		if primary[i].affinity {
+			hasAffinity = true
+			break
+		}
+		if warmHit == nil && primary[i].warm {
+			warmHit = &primary[i]
+		}
+	}
+	if !hasAffinity && warmHit != nil {
+		return *warmHit
+	}
+	return weightedRandomCandidate(primary)
 }
 
 // appendRemainingUnknowns 把还没出现在 ordered 里的 unknown URL 追加到末尾。
@@ -395,7 +420,10 @@ func planWithCanary(primary []selectorCandidate, canary selectorCandidate, extra
 // planCandidates 规划候选URL的尝试顺序（调用方已持有读锁）
 func planCandidates(sh *urlShard, channelID int64, model string, urls []string, now time.Time) []selectorCandidate {
 	candidates := buildCandidates(sh, channelID, model, urls, now)
-	markAffinity(sh, channelID, model, candidates)
+	// affinity 没命中才查 warm 备选，避免同一 URL 被重复打标
+	if !markAffinity(sh, channelID, model, candidates) {
+		markWarmCandidate(sh, channelID, model, candidates, now)
+	}
 	active, cooledFallback := splitCandidatesByAvailability(candidates)
 	real, probeOnly, unknown := splitCandidatesBySource(active)
 
