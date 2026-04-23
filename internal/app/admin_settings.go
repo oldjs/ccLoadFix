@@ -202,6 +202,18 @@ func validateSettingValue(key, valueType, value string) error {
 			if intVal < 1 || intVal > 3600 {
 				return fmt.Errorf("channel_affinity_ttl_seconds must be 1-3600")
 			}
+		case "low_latency_affinity_min_ms":
+			if intVal < 0 || intVal > 60000 {
+				return fmt.Errorf("low_latency_affinity_min_ms must be 0-60000")
+			}
+		case "low_latency_cooldown_ms":
+			if intVal < 0 || intVal > 60000 {
+				return fmt.Errorf("low_latency_cooldown_ms must be 0-60000")
+			}
+		case "low_latency_cooldown_duration_seconds":
+			if intVal < 0 || intVal > 86400 {
+				return fmt.Errorf("low_latency_cooldown_duration_seconds must be 0-86400")
+			}
 		default:
 			if intVal < -1 {
 				return fmt.Errorf("value must be >= -1")

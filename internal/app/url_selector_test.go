@@ -678,3 +678,84 @@ func TestURLSelector_ProbeURLs_DeduplicatesInFlightRequests(t *testing.T) {
 	closeRelease()
 	<-done1
 }
+
+func TestURLSelector_SuspectLowLatencyCooldown_Applied(t *testing.T) {
+	sel := NewURLSelector()
+	channelID := int64(1)
+	url := "https://suspect.com"
+
+	// 冷却 300ms → URL 应进入 cooldown
+	sel.SuspectLowLatencyCooldown(channelID, url, 300*time.Millisecond)
+	if !sel.IsCooledDown(channelID, url) {
+		t.Fatalf("expected url to be cooled down after SuspectLowLatencyCooldown")
+	}
+
+	// consecutiveFails 不能被累加（这不是真实失败）
+	sh := sel.getShard(channelID)
+	sh.mu.RLock()
+	cd := sh.cooldowns[urlKey{channelID: channelID, url: url}]
+	if cd.consecutiveFails != 0 {
+		sh.mu.RUnlock()
+		t.Fatalf("suspect cooldown should not accumulate consecutiveFails, got %d", cd.consecutiveFails)
+	}
+	// failure 计数不能被累加
+	if rc := sh.requests[urlKey{channelID: channelID, url: url}]; rc != nil && rc.failure != 0 {
+		sh.mu.RUnlock()
+		t.Fatalf("suspect cooldown should not increment failure, got %d", rc.failure)
+	}
+	sh.mu.RUnlock()
+
+	// 调两次仍只是固定时长：consecutiveFails 仍为 0
+	sel.SuspectLowLatencyCooldown(channelID, url, 300*time.Millisecond)
+	sh.mu.RLock()
+	cd = sh.cooldowns[urlKey{channelID: channelID, url: url}]
+	sh.mu.RUnlock()
+	if cd.consecutiveFails != 0 {
+		t.Fatalf("consecutiveFails should stay 0 after repeated suspect cooldowns, got %d", cd.consecutiveFails)
+	}
+}
+
+func TestURLSelector_SuspectLowLatencyCooldown_NoOpWhenZero(t *testing.T) {
+	sel := NewURLSelector()
+	channelID := int64(2)
+	url := "https://noop.com"
+
+	sel.SuspectLowLatencyCooldown(channelID, url, 0)
+	if sel.IsCooledDown(channelID, url) {
+		t.Fatalf("duration=0 should not install any cooldown")
+	}
+
+	sel.SuspectLowLatencyCooldown(channelID, url, -time.Second)
+	if sel.IsCooledDown(channelID, url) {
+		t.Fatalf("negative duration should not install any cooldown")
+	}
+}
+
+func TestURLSelector_SuspectLowLatencyCooldown_KeepsLongerExisting(t *testing.T) {
+	sel := NewURLSelector()
+	channelID := int64(3)
+	url := "https://longer.com"
+
+	// 先人工装入更长的真实冷却（例如真实失败后的 10 分钟）
+	sh := sel.getShard(channelID)
+	sh.mu.Lock()
+	longUntil := time.Now().Add(10 * time.Minute)
+	sh.cooldowns[urlKey{channelID: channelID, url: url}] = urlCooldownState{
+		until:            longUntil,
+		consecutiveFails: 3,
+	}
+	sh.mu.Unlock()
+
+	// 再调一个更短的 suspect 冷却：不能把更长的缩短
+	sel.SuspectLowLatencyCooldown(channelID, url, 5*time.Second)
+
+	sh.mu.RLock()
+	cd := sh.cooldowns[urlKey{channelID: channelID, url: url}]
+	sh.mu.RUnlock()
+	if !cd.until.Equal(longUntil) {
+		t.Fatalf("suspect cooldown should not shrink an existing longer cooldown; got until=%v want=%v", cd.until, longUntil)
+	}
+	if cd.consecutiveFails != 3 {
+		t.Fatalf("suspect cooldown should not reset consecutiveFails; got %d want 3", cd.consecutiveFails)
+	}
+}

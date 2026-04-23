@@ -795,11 +795,20 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 					if ttfb <= 0 {
 						ttfb = time.Duration(result.duration * float64(time.Second))
 					}
-					if ttfb > 0 {
-						selector.RecordLatency(cfg.ID, urlEntry.url, ttfb)
+					// 低延迟守卫：仅对流式生效，防诱导渠道污染URL亲和
+					suspectThreshold, affinityMin := s.lowLatencyGuardThresholds(reqCtx.isStreaming)
+					if ttfb > 0 && suspectThreshold > 0 && ttfb < suspectThreshold {
+						// 可疑快响应：冷却URL、不写EWMA、不写亲和
+						selector.SuspectLowLatencyCooldown(cfg.ID, urlEntry.url, s.lowLatencyCooldownDuration())
+					} else {
+						if ttfb > 0 {
+							selector.RecordLatency(cfg.ID, urlEntry.url, ttfb)
+						}
+						// 只有TTFB够高的请求才把URL写入亲和
+						if ttfb <= 0 || affinityMin <= 0 || ttfb >= affinityMin {
+							selector.SetModelAffinity(cfg.ID, actualModel, urlEntry.url)
+						}
 					}
-					// 记住这个URL：下次同模型直接用它
-					selector.SetModelAffinity(cfg.ID, actualModel, urlEntry.url)
 				}
 				return result, nil
 			}

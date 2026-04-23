@@ -564,6 +564,31 @@ func (s *URLSelector) ClearNoThinking(channelID int64, rawURL, model string) int
 	return cleared
 }
 
+// SuspectLowLatencyCooldown 对可疑低延迟URL施加固定时长冷却
+// 与 CooldownURL 的区别：不累加 consecutiveFails、不计入 failure
+// 用途：流式请求首字节异常快时隔离URL，避免诱导渠道污染亲和与选路权重
+func (s *URLSelector) SuspectLowLatencyCooldown(channelID int64, rawURL string, duration time.Duration) {
+	if duration <= 0 {
+		return
+	}
+	key := urlKey{channelID: channelID, url: rawURL}
+
+	sh := s.getShard(channelID)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+
+	now := time.Now()
+	s.maybeCleanupShard(sh, now)
+
+	// 固定时长，不累加失败计数；若已有更长冷却则保留较长的
+	cd := sh.cooldowns[key]
+	until := now.Add(duration)
+	if until.After(cd.until) {
+		cd.until = until
+	}
+	sh.cooldowns[key] = cd
+}
+
 // CooldownURL 对URL施加指数退避冷却
 func (s *URLSelector) CooldownURL(channelID int64, url string) {
 	key := urlKey{channelID: channelID, url: url}
