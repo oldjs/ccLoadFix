@@ -144,7 +144,9 @@ func (s *Server) applyChannelAffinity(candidates []*modelpkg.Config, model strin
 	// 查询亲和
 	affinityID, ok := s.channelAffinity.Get(model, ttl)
 	if !ok {
-		return candidates
+		// 亲和失效（从未建立 / 过期 / 被清）：如果其他渠道对该 model 还有
+		// 近期成功的 URL warm 证据，给一个软兜底加权，帮助更快切到更可能可用的渠道。
+		return s.applyCrossChannelWarmBoost(candidates, model)
 	}
 
 	// 概率灰度：不是每个请求都应用亲和
@@ -171,6 +173,85 @@ func (s *Server) applyChannelAffinity(candidates []*modelpkg.Config, model strin
 		}
 	}
 
+	return candidates
+}
+
+// warm boost 的 freshness 窗口与采样概率。
+// 选值依据：
+//   - warm 原始 TTL 30min 太宽，channel affinity 自己的 TTL 也是 30min，沿用会把老信号再放大
+//   - 5min 表示"刚刚还在用"，强信号；10min 留一点缓冲但不吃老数据
+//   - 概率分档等价于"软乘数"，同时保留 SmoothWeightedRR 的轮询公平性
+const (
+	warmBoostWindowStrong = 5 * time.Minute
+	warmBoostWindowWeak   = 10 * time.Minute
+	warmBoostProbStrong   = 0.5  // 强候选 50% 概率提权
+	warmBoostProbWeak     = 0.25 // 弱候选 25% 概率提权
+)
+
+// pickCrossChannelWarmBoostTarget 找出 top bucket 内 warm 最新鲜的候选位置及采样概率。
+// 纯函数，便于测试：不做随机决策，调用方拿到 (idx, prob) 后自己采样。
+// 返回 bestIdx <= 0 或 prob <= 0 时表示"不 boost"（已经在首位、没新鲜 warm、或关了开关）。
+func (s *Server) pickCrossChannelWarmBoostTarget(candidates []*modelpkg.Config, model string, now time.Time) (int, float64) {
+	if s.urlSelector == nil || model == "" || len(candidates) <= 1 {
+		return -1, 0
+	}
+
+	// 子开关：失效场景下的 warm 兜底可以独立关掉，不影响亲和本身
+	if s.configService != nil && !s.configService.GetBool("cross_channel_warm_boost_enabled", true) {
+		return -1, 0
+	}
+
+	topBucket := s.getEffPriorityBucket(candidates[0])
+
+	bestIdx := -1
+	var bestAge time.Duration
+	for i, cfg := range candidates {
+		// 仅在 top bucket 内挑选，不跨桶提升
+		if s.getEffPriorityBucket(cfg) != topBucket {
+			break
+		}
+		_, age, ok := s.urlSelector.GetFreshWarmURL(cfg.ID, model, now)
+		if !ok {
+			continue
+		}
+		// 超过弱档窗口的当作"老数据"直接丢
+		if age > warmBoostWindowWeak {
+			continue
+		}
+		if bestIdx < 0 || age < bestAge {
+			bestIdx = i
+			bestAge = age
+		}
+	}
+
+	if bestIdx < 0 {
+		return -1, 0 // 没有新鲜 warm
+	}
+	if bestIdx == 0 {
+		return 0, 0 // 最佳已在首位，不用动
+	}
+
+	// 按 age 分档采样概率
+	prob := warmBoostProbWeak
+	if bestAge <= warmBoostWindowStrong {
+		prob = warmBoostProbStrong
+	}
+	return bestIdx, prob
+}
+
+// applyCrossChannelWarmBoost channel affinity 失效时的软兜底。
+// 行为：按 pickCrossChannelWarmBoostTarget 给出的 (idx, prob) 采样，命中就把该候选 swap 到 position 0。
+// 为什么是概率性：强 swap 会掩盖 SmoothWeightedRR 的轮询公平性，且 warm 只是"间接证据"，
+// 概率性让它表现为"软乘数"——中了就走 warm 候选、没中走正常轮询。
+func (s *Server) applyCrossChannelWarmBoost(candidates []*modelpkg.Config, model string) []*modelpkg.Config {
+	bestIdx, prob := s.pickCrossChannelWarmBoostTarget(candidates, model, time.Now())
+	if bestIdx <= 0 || prob <= 0 {
+		return candidates
+	}
+	if rand.Float64() >= prob {
+		return candidates // 本次不生效
+	}
+	candidates[0], candidates[bestIdx] = candidates[bestIdx], candidates[0]
 	return candidates
 }
 

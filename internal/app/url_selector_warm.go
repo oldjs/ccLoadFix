@@ -170,6 +170,46 @@ func gcWarms(sh *urlShard, now time.Time) {
 	}
 }
 
+// GetFreshWarmURL 查询 (channel, model) 的最新"可用且新鲜"的 warm URL。
+// 可用 = 不在 URL 冷却、不在慢隔离；新鲜 = slot.lastSuccess 未超 warmEntryTTL。
+// 用途：channel affinity 失效时，跨渠道判断"哪个渠道上对该 model 还有近期成功证据"。
+// 调用点会拿 age 做更紧的窗口判断（比 warmEntryTTL 更短），本函数只负责"有没有 & 多新"。
+func (s *URLSelector) GetFreshWarmURL(channelID int64, model string, now time.Time) (string, time.Duration, bool) {
+	if model == "" {
+		return "", 0, false
+	}
+	ak := modelAffinityKey{channelID: channelID, model: model}
+	sh := s.getShard(channelID)
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+
+	entry, ok := sh.warms[ak]
+	if !ok || entry == nil || entry.count == 0 {
+		return "", 0, false
+	}
+	cutoff := now.Add(-warmEntryTTL)
+	// slot 已按 lastSuccess 倒序，[0] 最新 —— 顺序扫，头一个"新鲜 + 可用"就是最佳
+	for i := uint8(0); i < entry.count; i++ {
+		slot := entry.slots[i]
+		if slot.url == "" {
+			continue
+		}
+		if slot.lastSuccess.Before(cutoff) {
+			continue
+		}
+		// 同分片内读冷却/慢隔离，不用再锁一次
+		key := urlKey{channelID: channelID, url: slot.url}
+		if cd, ok := sh.cooldowns[key]; ok && now.Before(cd.until) {
+			continue
+		}
+		if until, ok := sh.slowIsolations[key]; ok && now.Before(until) {
+			continue
+		}
+		return slot.url, now.Sub(slot.lastSuccess), true
+	}
+	return "", 0, false
+}
+
 // markWarmCandidate 扫 candidates，给 warm list 里"最新未过期 & 可用"的首个 URL 打 warm 标记。
 // 只标一个，用于 pickFirstHop 硬选首跳。调用方已持读锁。
 // 返回是否命中，便于上层决定是否跳过 canary 探索。
