@@ -71,3 +71,15 @@ func (s *Server) HandleURLWarm(c *gin.Context) {
 	}
 	RespondJSON(c, http.StatusOK, list)
 }
+
+// HandleWarmBoostCandidates 返回当前所有具备 warm boost 资格的 (channel, model) 条目
+// GET /admin/warm-boost-candidates
+// 用途：管理员在 affinity 页上直观看到——当 channel affinity 失效时，哪些 channel 会被这条
+// 跨渠道 warm 软兜底加权、依据是什么（age / tier / boost_prob / 当前是否活跃）
+func (s *Server) HandleWarmBoostCandidates(c *gin.Context) {
+	list := s.ListWarmBoostCandidates(time.Now())
+	if list == nil {
+		list = []WarmBoostCandidateStatus{}
+	}
+	RespondJSON(c, http.StatusOK, list)
+}

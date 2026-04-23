@@ -385,7 +385,7 @@ func TestPickCrossChannelWarmBoost_FreshWarmInOther(t *testing.T) {
 	}
 }
 
-// TestPickCrossChannelWarmBoost_WeakWindow 5-10 分钟之间 → 弱档概率
+// TestPickCrossChannelWarmBoost_WeakWindow 10-30 分钟之间 → 弱档概率
 func TestPickCrossChannelWarmBoost_WeakWindow(t *testing.T) {
 	s := &Server{
 		channelAffinity: NewChannelAffinity(),
@@ -396,8 +396,8 @@ func TestPickCrossChannelWarmBoost_WeakWindow(t *testing.T) {
 	ch2 := &modelpkg.Config{ID: 2, Priority: 1000}
 
 	now := time.Now()
-	// ch2 有 7 分钟前的 warm（弱档：5-10min）
-	injectWarmSlot(t, s.urlSelector, 2, "m", "https://ch2.example.com", now.Add(-7*time.Minute))
+	// ch2 有 20 分钟前的 warm（弱档：10-30min）
+	injectWarmSlot(t, s.urlSelector, 2, "m", "https://ch2.example.com", now.Add(-20*time.Minute))
 
 	idx, prob := s.pickCrossChannelWarmBoostTarget([]*modelpkg.Config{ch1, ch2}, "m", now)
 	if idx != 1 {
@@ -408,7 +408,7 @@ func TestPickCrossChannelWarmBoost_WeakWindow(t *testing.T) {
 	}
 }
 
-// TestPickCrossChannelWarmBoost_StaleWarm warm 超 10min → 不 boost
+// TestPickCrossChannelWarmBoost_StaleWarm warm 超 30min → 不 boost
 func TestPickCrossChannelWarmBoost_StaleWarm(t *testing.T) {
 	s := &Server{
 		channelAffinity: NewChannelAffinity(),
@@ -419,8 +419,8 @@ func TestPickCrossChannelWarmBoost_StaleWarm(t *testing.T) {
 	ch2 := &modelpkg.Config{ID: 2, Priority: 1000}
 
 	now := time.Now()
-	// ch2 的 warm 是 15 分钟前（超过 10min 弱档窗口）
-	injectWarmSlot(t, s.urlSelector, 2, "m", "https://ch2.example.com", now.Add(-15*time.Minute))
+	// ch2 的 warm 是 45 分钟前（超过 warmEntryTTL，实际 GetFreshWarmURL 会先 filter 掉）
+	injectWarmSlot(t, s.urlSelector, 2, "m", "https://ch2.example.com", now.Add(-45*time.Minute))
 
 	idx, _ := s.pickCrossChannelWarmBoostTarget([]*modelpkg.Config{ch1, ch2}, "m", now)
 	if idx != -1 {
@@ -503,8 +503,8 @@ func TestPickCrossChannelWarmBoost_PicksFreshest(t *testing.T) {
 	ch3 := &modelpkg.Config{ID: 3, Priority: 1000}
 
 	now := time.Now()
-	// ch2 较老（7min，弱档），ch3 最新（30s，强档）
-	injectWarmSlot(t, s.urlSelector, 2, "m", "https://ch2.example.com", now.Add(-7*time.Minute))
+	// ch2 较老（20min，弱档），ch3 最新（30s，强档）
+	injectWarmSlot(t, s.urlSelector, 2, "m", "https://ch2.example.com", now.Add(-20*time.Minute))
 	injectWarmSlot(t, s.urlSelector, 3, "m", "https://ch3.example.com", now.Add(-30*time.Second))
 
 	idx, prob := s.pickCrossChannelWarmBoostTarget([]*modelpkg.Config{ch1, ch2, ch3}, "m", now)
@@ -644,6 +644,63 @@ func TestGetFreshWarmURL_CooledDownSkipped(t *testing.T) {
 	_, _, ok := sel.GetFreshWarmURL(1, "m", now)
 	if ok {
 		t.Fatal("expected miss when URL in cooldown")
+	}
+}
+
+// TestListWarmBoostCandidates_TierAndState 覆盖档位判断和 affinity 遮蔽状态
+func TestListWarmBoostCandidates_TierAndState(t *testing.T) {
+	s := &Server{
+		channelAffinity: NewChannelAffinity(),
+		urlSelector:     NewURLSelector(),
+	}
+
+	now := time.Now()
+
+	// chA: model-x 有 2 分钟 warm → 强档 + effective（无亲和）
+	injectWarmSlot(t, s.urlSelector, 1, "model-x", "https://a.example.com", now.Add(-2*time.Minute))
+
+	// chB: model-y 有 20 分钟 warm → 弱档 + effective
+	injectWarmSlot(t, s.urlSelector, 2, "model-y", "https://b.example.com", now.Add(-20*time.Minute))
+
+	// chC: model-z 有 3 分钟 warm，但 model-z 亲和活跃在 chC 自己 → masked
+	injectWarmSlot(t, s.urlSelector, 3, "model-z", "https://c.example.com", now.Add(-3*time.Minute))
+	s.channelAffinity.Set("model-z", 3)
+
+	// chD: model-q 有 40 分钟 warm（超 TTL）→ 被过滤不出现
+	injectWarmSlot(t, s.urlSelector, 4, "model-q", "https://d.example.com", now.Add(-40*time.Minute))
+
+	list := s.ListWarmBoostCandidates(now)
+
+	// 预期 3 条：model-x/strong/effective, model-y/weak/effective, model-z/strong/masked
+	if len(list) != 3 {
+		t.Fatalf("expected 3 entries, got %d: %+v", len(list), list)
+	}
+
+	byModel := make(map[string]WarmBoostCandidateStatus, len(list))
+	for _, it := range list {
+		byModel[it.Model] = it
+	}
+
+	if got := byModel["model-x"]; got.Tier != "strong" || got.BoostProb != warmBoostProbStrong || !got.Effective || got.AffinityActive {
+		t.Fatalf("model-x: expected strong+effective, got %+v", got)
+	}
+	if got := byModel["model-y"]; got.Tier != "weak" || got.BoostProb != warmBoostProbWeak || !got.Effective || got.AffinityActive {
+		t.Fatalf("model-y: expected weak+effective, got %+v", got)
+	}
+	if got := byModel["model-z"]; got.Tier != "strong" || got.Effective || !got.AffinityActive || got.AffinityChannelID != 3 {
+		t.Fatalf("model-z: expected strong+masked+affinity_ch=3, got %+v", got)
+	}
+	if _, ok := byModel["model-q"]; ok {
+		t.Fatal("model-q with stale warm should be filtered")
+	}
+}
+
+// TestListWarmBoostCandidates_Empty 未初始化 urlSelector 时返回 nil，避免 panic
+func TestListWarmBoostCandidates_Empty(t *testing.T) {
+	s := &Server{channelAffinity: NewChannelAffinity()}
+	list := s.ListWarmBoostCandidates(time.Now())
+	if list != nil {
+		t.Fatalf("expected nil, got %+v", list)
 	}
 }
 

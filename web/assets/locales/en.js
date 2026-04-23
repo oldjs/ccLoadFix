@@ -1121,5 +1121,16 @@ window.I18N_LOCALES['en'] = {
   'affinity.loadFailed': 'Load failed',
   'affinity.emptyChannel': 'No channel affinity entries',
   'affinity.emptyURL': 'No URL affinity entries',
-  'affinity.emptyWarm': 'No warm list entries'
+  'affinity.emptyWarm': 'No warm list entries',
+  'affinity.boostTitle': 'Cross-Channel Soft Fallback',
+  'affinity.boostDesc': 'Weighted candidates based on other channels\' fresh warms when channel affinity lapses (30-min window, top priority bucket only)',
+  'affinity.colBoostTier': 'Tier',
+  'affinity.colBoostProb': 'Sample Prob.',
+  'affinity.colBoostState': 'State',
+  'affinity.boostTierStrong': 'Strong',
+  'affinity.boostTierWeak': 'Weak',
+  'affinity.boostStateEffective': 'Active now',
+  'affinity.boostStateMasked': 'Masked by affinity',
+  'affinity.boostStateMaskedBy': 'Masked · affinity on #{channel}',
+  'affinity.emptyBoost': 'No warm-boost candidates'
 };

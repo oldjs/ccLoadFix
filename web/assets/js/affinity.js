@@ -178,6 +178,57 @@ async function renderURLWarm() {
 }
 
 // ============================================================
+// 跨渠道软兜底（warm boost candidates）
+// ============================================================
+
+async function renderWarmBoost() {
+  const tbody = document.getElementById('warm-boost-tbody');
+  if (!tbody) return;
+  try {
+    const list = await window.fetchDataWithAuth('/admin/warm-boost-candidates');
+    if (!Array.isArray(list) || list.length === 0) {
+      setEmptyRow(tbody, 7, 'affinity.emptyBoost');
+      return;
+    }
+    // 先按 model，再按 age 升序（最新鲜的在前）
+    list.sort((a, b) => {
+      const c = String(a.model).localeCompare(String(b.model));
+      if (c !== 0) return c;
+      return Number(a.age_ms) - Number(b.age_ms);
+    });
+    const rows = list.map(item => {
+      const tierKey = item.tier === 'strong' ? 'affinity.boostTierStrong' : 'affinity.boostTierWeak';
+      const tierCls = item.tier === 'strong' ? 'tier-strong' : 'tier-weak';
+      // 概率显示：0.5 → 50%
+      const probPct = Math.round(Number(item.boost_prob || 0) * 100);
+      // 状态：Effective → 蓝色标签；AffinityActive 遮蔽则显示当前亲和 channel
+      let stateHtml;
+      if (item.effective) {
+        stateHtml = `<span class="warm-boost-state state-effective">${escapeHtml(t('affinity.boostStateEffective'))}</span>`;
+      } else {
+        const maskLabel = item.affinity_channel_id
+          ? t('affinity.boostStateMaskedBy', { channel: item.affinity_channel_id })
+          : t('affinity.boostStateMasked');
+        stateHtml = `<span class="warm-boost-state state-masked">${escapeHtml(maskLabel)}</span>`;
+      }
+      return `<tr>
+        <td class="affinity-cell-mono">${escapeHtml(item.model)}</td>
+        <td>${channelLabel(item.channel_id)}</td>
+        <td class="affinity-cell-mono">${escapeHtml(item.url)}</td>
+        <td>${escapeHtml(humanizeMs(item.age_ms))}</td>
+        <td><span class="warm-boost-tier ${tierCls}">${escapeHtml(t(tierKey))}</span></td>
+        <td>${probPct}%</td>
+        <td>${stateHtml}</td>
+      </tr>`;
+    }).join('');
+    tbody.innerHTML = rows;
+  } catch (e) {
+    console.error('load warm boost candidates failed:', e);
+    setEmptyRow(tbody, 7, 'affinity.loadFailed');
+  }
+}
+
+// ============================================================
 // 协调：刷新所有 + 自动刷新
 // ============================================================
 
@@ -197,6 +248,7 @@ async function reloadAll() {
     renderChannelAffinity(),
     renderURLAffinity(),
     renderURLWarm(),
+    renderWarmBoost(),
   ]);
   updateTimestamp();
 }

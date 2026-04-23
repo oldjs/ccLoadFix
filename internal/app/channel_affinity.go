@@ -178,15 +178,87 @@ func (s *Server) applyChannelAffinity(candidates []*modelpkg.Config, model strin
 
 // warm boost 的 freshness 窗口与采样概率。
 // 选值依据：
-//   - warm 原始 TTL 30min 太宽，channel affinity 自己的 TTL 也是 30min，沿用会把老信号再放大
-//   - 5min 表示"刚刚还在用"，强信号；10min 留一点缓冲但不吃老数据
+//   - 窗口上限 30min 对齐 warmEntryTTL：原始 warm 里还没过期的 slot 都能作为软兜底依据
+//   - 10min 内视为"强信号"（最近刚成功过），10-30min 视为"弱信号"（还在 TTL 内但不算很新）
+//   - 超过 30min 的 slot 直接丢弃，不吃老数据
 //   - 概率分档等价于"软乘数"，同时保留 SmoothWeightedRR 的轮询公平性
+//   - URL 是否在冷却/慢隔离由 GetFreshWarmURL 内联检查，避免拿到已确认坏掉的上游
 const (
-	warmBoostWindowStrong = 5 * time.Minute
-	warmBoostWindowWeak   = 10 * time.Minute
+	warmBoostWindowStrong = 10 * time.Minute
+	warmBoostWindowWeak   = 30 * time.Minute
 	warmBoostProbStrong   = 0.5  // 强候选 50% 概率提权
 	warmBoostProbWeak     = 0.25 // 弱候选 25% 概率提权
 )
+
+// WarmBoostCandidateStatus admin 展示用：某个 (channel, model) 当前是否具备 warm boost 资格。
+// 注意：Effective=true 只表示"当前时刻：该 model 的 channel affinity 已失效、warm URL 新鲜且可用"。
+// 实际 boost 生效还受 top priority bucket 约束（管理员可对照渠道优先级自行判断）。
+type WarmBoostCandidateStatus struct {
+	Model             string  `json:"model"`
+	ChannelID         int64   `json:"channel_id"`
+	URL               string  `json:"url"`                           // 会被作为 boost 依据的 warm URL（通常是最新一跳成功的）
+	AgeMs             int64   `json:"age_ms"`                        // warm slot 的 age
+	Tier              string  `json:"tier"`                          // "strong" / "weak"
+	BoostProb         float64 `json:"boost_prob"`                    // 该档位的采样概率
+	AffinityActive    bool    `json:"affinity_active"`               // 该 model 的 channel affinity 是否还活着
+	AffinityChannelID int64   `json:"affinity_channel_id,omitempty"` // 若活着，指向的 channel
+	Effective         bool    `json:"effective"`                     // 本条 boost 当前是否实际会被采样（= !AffinityActive）
+}
+
+// ListWarmBoostCandidates 汇总所有具备"freshness 资格"的 warm 条目及其 boost 档位。
+// 过滤规则：warm slot age ≤ warmBoostWindowWeak（30min）且 URL 不在冷却/慢隔离。
+// 再叠加 channel affinity 快照，标注本条是否会"当前时刻"真的进入 boost 决策。
+func (s *Server) ListWarmBoostCandidates(now time.Time) []WarmBoostCandidateStatus {
+	if s.urlSelector == nil {
+		return nil
+	}
+
+	// 先拿 channel affinity 快照，单次读锁
+	affinityMap := make(map[string]int64)
+	if s.channelAffinity != nil {
+		ttlSec := 1800
+		if s.configService != nil {
+			ttlSec = s.configService.GetInt("channel_affinity_ttl_seconds", 1800)
+		}
+		ttl := time.Duration(ttlSec) * time.Second
+		for _, it := range s.channelAffinity.ListAll(ttl) {
+			affinityMap[it.Model] = it.ChannelID
+		}
+	}
+
+	// 再扫 warm：复用 GetFreshWarmURL 确保"冷却+慢隔离+warm TTL"这套判断口径一致
+	warms := s.urlSelector.ListAllWarms()
+	out := make([]WarmBoostCandidateStatus, 0, len(warms))
+	for _, w := range warms {
+		url, age, ok := s.urlSelector.GetFreshWarmURL(w.ChannelID, w.Model, now)
+		if !ok {
+			continue
+		}
+		// 窗口上限同 pickCrossChannelWarmBoostTarget，保证展示与决策一致
+		if age > warmBoostWindowWeak {
+			continue
+		}
+		tier := "weak"
+		prob := warmBoostProbWeak
+		if age <= warmBoostWindowStrong {
+			tier = "strong"
+			prob = warmBoostProbStrong
+		}
+		affCh, affActive := affinityMap[w.Model]
+		out = append(out, WarmBoostCandidateStatus{
+			Model:             w.Model,
+			ChannelID:         w.ChannelID,
+			URL:               url,
+			AgeMs:             age.Milliseconds(),
+			Tier:              tier,
+			BoostProb:         prob,
+			AffinityActive:    affActive,
+			AffinityChannelID: affCh,
+			Effective:         !affActive,
+		})
+	}
+	return out
+}
 
 // pickCrossChannelWarmBoostTarget 找出 top bucket 内 warm 最新鲜的候选位置及采样概率。
 // 纯函数，便于测试：不做随机决策，调用方拿到 (idx, prob) 后自己采样。

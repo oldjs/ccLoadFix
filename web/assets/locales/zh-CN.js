@@ -1121,5 +1121,16 @@ window.I18N_LOCALES['zh-CN'] = {
   'affinity.loadFailed': '加载失败',
   'affinity.emptyChannel': '暂无渠道亲和',
   'affinity.emptyURL': '暂无 URL 亲和',
-  'affinity.emptyWarm': '暂无 warm 备选'
+  'affinity.emptyWarm': '暂无 warm 备选',
+  'affinity.boostTitle': '跨渠道软兜底',
+  'affinity.boostDesc': '渠道亲和失效时，基于其他渠道新鲜 warm 的加权候选（30 分钟窗口，受优先级桶约束）',
+  'affinity.colBoostTier': '档位',
+  'affinity.colBoostProb': '采样概率',
+  'affinity.colBoostState': '状态',
+  'affinity.boostTierStrong': '强档',
+  'affinity.boostTierWeak': '弱档',
+  'affinity.boostStateEffective': '当前生效',
+  'affinity.boostStateMasked': '被亲和遮蔽',
+  'affinity.boostStateMaskedBy': '被亲和遮蔽 · 现走 #{channel}',
+  'affinity.emptyBoost': '暂无可用软兜底候选'
 };
