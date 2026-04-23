@@ -647,9 +647,9 @@ func (s *Server) stateCleanupLoop() {
 
 			// 清理过期的渠道亲和条目
 			if s.channelAffinity != nil {
-				ttlSec := 600
+				ttlSec := 1800
 				if s.configService != nil {
-					ttlSec = s.configService.GetInt("channel_affinity_ttl_seconds", 600)
+					ttlSec = s.configService.GetInt("channel_affinity_ttl_seconds", 1800)
 				}
 				s.channelAffinity.Cleanup(time.Duration(ttlSec) * time.Second)
 			}

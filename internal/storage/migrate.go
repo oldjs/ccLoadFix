@@ -684,7 +684,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"cooldown_fallback_enabled", "true", "bool", "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true"},
 		// 渠道亲和配置
 		{"channel_affinity_enabled", "true", "bool", "渠道亲和开关(per-model记住上次成功的渠道)", "true"},
-		{"channel_affinity_ttl_seconds", "600", "int", "渠道亲和TTL(秒,过期后重新选择)", "600"},
+		{"channel_affinity_ttl_seconds", "1800", "int", "渠道亲和TTL(秒,过期后重新选择)", "1800"},
 		{"channel_affinity_probability", "1.0", "string", "渠道亲和生效概率(0.0-1.0,用于灰度)", "1.0"},
 		// 低延迟守卫：防止伪造快响应的诱导渠道污染URL亲和(仅流式、仅多URL渠道)
 		{"low_latency_guard_enabled", "true", "bool", "低延迟守卫开关(防诱导渠道污染URL亲和)", "true"},
