@@ -562,11 +562,10 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/metrics", s.HandleMetrics)
 		admin.GET("/stats", s.HandleStats)
 		admin.GET("/cooldown/stats", s.HandleCooldownStats)
-		admin.GET("/channel-affinity", s.HandleChannelAffinity)          // 渠道亲和状态
-		admin.DELETE("/channel-affinity", s.HandleClearChannelAffinity)  // 清除所有渠道亲和
-		admin.GET("/url-affinity", s.HandleURLAffinity)                  // URL 级亲和状态（全渠道）
-		admin.GET("/url-warm", s.HandleURLWarm)                          // URL warm 备选列表（全渠道）
-		admin.GET("/warm-boost-candidates", s.HandleWarmBoostCandidates) // 跨渠道 warm 软兜底候选
+		admin.GET("/channel-affinity", s.HandleChannelAffinity)         // 渠道亲和状态
+		admin.DELETE("/channel-affinity", s.HandleClearChannelAffinity) // 清除所有渠道亲和
+		admin.GET("/url-affinity", s.HandleURLAffinity)                 // URL 级亲和状态（全渠道）
+		admin.GET("/url-warm", s.HandleURLWarm)                         // URL warm 备选列表（全渠道）
 		admin.GET("/models", s.HandleGetModels)
 
 		// API访问令牌管理
