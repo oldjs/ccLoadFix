@@ -4,8 +4,8 @@ import "time"
 
 // 低延迟守卫默认值（与 migrate.go 中的 system_settings 默认值保持一致）
 const (
-	defaultLowLatencyAffinityMinMs       = 900
-	defaultLowLatencyCooldownMs          = 300
+	defaultLowLatencyAffinityMinMs       = 100
+	defaultLowLatencyCooldownMs          = 50
 	defaultLowLatencyCooldownDurationSec = 300
 	defaultLowLatencyGuardEnabled        = true
 )

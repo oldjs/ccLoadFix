@@ -688,8 +688,8 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"channel_affinity_probability", "1.0", "string", "渠道亲和生效概率(0.0-1.0,用于灰度)", "1.0"},
 		// 低延迟守卫：防止伪造快响应的诱导渠道污染URL亲和(仅流式、仅多URL渠道)
 		{"low_latency_guard_enabled", "true", "bool", "低延迟守卫开关(防诱导渠道污染URL亲和)", "true"},
-		{"low_latency_affinity_min_ms", "900", "int", "TTFB低于此值的URL不写入亲和(毫秒)", "900"},
-		{"low_latency_cooldown_ms", "300", "int", "TTFB低于此值的URL直接冷却(毫秒)", "300"},
+		{"low_latency_affinity_min_ms", "100", "int", "TTFB低于此值的URL不写入亲和(毫秒)", "100"},
+		{"low_latency_cooldown_ms", "50", "int", "TTFB低于此值的URL直接冷却(毫秒)", "50"},
 		{"low_latency_cooldown_duration_seconds", "300", "int", "低延迟冷却持续时间(秒,固定不退避)", "300"},
 	}
 
