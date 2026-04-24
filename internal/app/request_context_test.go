@@ -110,19 +110,25 @@ func TestStreamIdleWatchdog_FiresOnInactivity(t *testing.T) {
 	reqCtx := s.newRequestContext(context.Background(), "/v1/responses", body, "gpt-image-1")
 	defer reqCtx.cleanup()
 
-	var expireCalled bool
+	// 用 channel 同步：timer goroutine 通知主 goroutine，避免跨 goroutine 读写普通 bool
+	expired := make(chan struct{}, 1)
 	reqCtx.startStreamIdleWatchdog(func() {
-		expireCalled = true
+		select {
+		case expired <- struct{}{}:
+		default:
+		}
 	})
 
-	// 等待 timer 自然过期
-	time.Sleep(120 * time.Millisecond)
+	// 等待回调被调用（或超时兜底避免测试永挂）
+	select {
+	case <-expired:
+		// 正常路径：timer 触发了
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected onExpire callback to fire within 500ms")
+	}
 
 	if !reqCtx.streamIdleTimeoutTriggered() {
 		t.Fatal("expected streamIdleFired=true after timer expiry")
-	}
-	if !expireCalled {
-		t.Fatal("expected onExpire callback to be called")
 	}
 }
 

@@ -26,11 +26,10 @@ type requestContext struct {
 
 	// [INFO] gpt-image 等上游容易静默卡死的模型：首字节后仍需 idle watchdog
 	// 只要上游持续有字节/事件/心跳进展就重置，正常 1-5 分钟流式生图不会被误杀
-	streamIdleTimeout  time.Duration // 0 = 关闭 idle watchdog
-	streamIdleTimer    *time.Timer
-	streamIdleFired    atomic.Bool
-	streamIdleOnExpire func() // 到期时的回调（通常是关闭上游 body），由 handleResponse 注入
-	lastProgressAt     atomic.Int64
+	streamIdleTimeout time.Duration // 0 = 关闭 idle watchdog
+	streamIdleTimer   *time.Timer
+	streamIdleFired   atomic.Bool
+	lastProgressAt    atomic.Int64
 
 	// 是否命中 gpt-image 专用超时路径（用于日志/诊断）
 	isGPTImageModel bool
@@ -213,13 +212,19 @@ func (rc *requestContext) firstByteTimeoutTriggered() bool {
 // startStreamIdleWatchdog 启动流式 idle watchdog
 // 通常在首字节到达时调用；onExpire 用于关闭上游 body 以打断阻塞 Read
 // onExpire 必须幂等（可能被多次调用或与正常关闭并发）
+// 设计：把 onExpire 捕获到 closure 里，避免跨 goroutine 共享字段引发数据竞争
 func (rc *requestContext) startStreamIdleWatchdog(onExpire func()) {
 	if rc.streamIdleTimeout <= 0 || onExpire == nil {
 		return
 	}
-	rc.streamIdleOnExpire = onExpire
 	rc.lastProgressAt.Store(time.Now().UnixNano())
-	rc.streamIdleTimer = time.AfterFunc(rc.streamIdleTimeout, rc.onStreamIdleExpire)
+	rc.streamIdleTimer = time.AfterFunc(rc.streamIdleTimeout, func() {
+		// 幂等：已触发过就不重复执行 onExpire
+		if rc.streamIdleFired.Swap(true) {
+			return
+		}
+		onExpire()
+	})
 }
 
 // resetStreamIdleWatchdog 收到字节/事件后重置 idle timer
@@ -235,18 +240,6 @@ func (rc *requestContext) resetStreamIdleWatchdog() {
 func (rc *requestContext) stopStreamIdleWatchdog() {
 	if rc.streamIdleTimer != nil {
 		rc.streamIdleTimer.Stop()
-	}
-}
-
-// onStreamIdleExpire idle timer 到期回调
-// 设置 fired 标志并执行 onExpire（关闭上游 body 打断阻塞 Read）
-func (rc *requestContext) onStreamIdleExpire() {
-	// 双重检查：已触发就别重复执行回调
-	if rc.streamIdleFired.Swap(true) {
-		return
-	}
-	if rc.streamIdleOnExpire != nil {
-		rc.streamIdleOnExpire()
 	}
 }
 
