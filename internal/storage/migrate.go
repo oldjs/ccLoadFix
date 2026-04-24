@@ -691,6 +691,12 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"low_latency_affinity_min_ms", "100", "int", "TTFB低于此值的URL不写入亲和(毫秒)", "100"},
 		{"low_latency_cooldown_ms", "50", "int", "TTFB低于此值的URL直接冷却(毫秒)", "50"},
 		{"low_latency_cooldown_duration_seconds", "300", "int", "低延迟冷却持续时间(秒,固定不退避)", "300"},
+		// gpt-image 系列专用超时：对"上游链路偶发卡死/提前断流"做快失败
+		// 1-5 分钟正常流式生图只要上游持续有字节/事件进展就不会被误杀
+		{"gpt_image_first_byte_timeout_seconds", "30", "int", "gpt-image首字节超时(秒,响应头都没开始回时触发)", "30"},
+		{"gpt_image_upstream_timeout_seconds", "90", "int", "gpt-image非流式整体超时(秒,0=跟全局non_stream_timeout)", "90"},
+		{"gpt_image_stream_idle_timeout_seconds", "45", "int", "gpt-image流式首字节后无字节进展的idle超时(秒,0=关闭)", "45"},
+		{"stream_idle_timeout_seconds", "0", "int", "全局流式idle超时(秒,0=关闭,仅特殊模型命中独立设置)", "0"},
 	}
 
 	var query string

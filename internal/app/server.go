@@ -60,6 +60,11 @@ type Server struct {
 	maxKeyRetries    int           // 单个渠道内最大Key重试次数
 	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
 	nonStreamTimeout time.Duration // 非流式请求超时
+	// gpt-image 系列专用超时（见 defaults.go 注释）
+	gptImageFirstByteTimeout  time.Duration // gpt-image 首字节超时（流式+非流式都挂）
+	gptImageUpstreamTimeout   time.Duration // gpt-image 非流式整体超时（0=跟 nonStreamTimeout）
+	gptImageStreamIdleTimeout time.Duration // gpt-image 流式首字节后 idle 容忍
+	streamIdleTimeout         time.Duration // 全局流式 idle 超时（0=关闭）
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
 	modelFuzzyMatch bool // 未命中时启用模糊匹配（子串匹配+版本排序）
 
@@ -129,6 +134,26 @@ func NewServer(store storage.Store) *Server {
 		nonStreamTimeout = 120 * time.Second
 	}
 
+	// gpt-image 系列专用超时（存 int 秒，单位转换）
+	gptImageFirstByteTimeout := time.Duration(configService.GetInt("gpt_image_first_byte_timeout_seconds", int(config.DefaultGPTImageFirstByteTimeout/time.Second))) * time.Second
+	if gptImageFirstByteTimeout <= 0 {
+		gptImageFirstByteTimeout = config.DefaultGPTImageFirstByteTimeout
+	}
+	gptImageUpstreamTimeout := time.Duration(configService.GetInt("gpt_image_upstream_timeout_seconds", int(config.DefaultGPTImageUpstreamTimeout/time.Second))) * time.Second
+	if gptImageUpstreamTimeout < 0 {
+		gptImageUpstreamTimeout = config.DefaultGPTImageUpstreamTimeout
+	}
+	gptImageStreamIdleTimeout := time.Duration(configService.GetInt("gpt_image_stream_idle_timeout_seconds", int(config.DefaultGPTImageStreamIdleTimeout/time.Second))) * time.Second
+	if gptImageStreamIdleTimeout < 0 {
+		gptImageStreamIdleTimeout = config.DefaultGPTImageStreamIdleTimeout
+	}
+	streamIdleTimeout := max(
+		time.Duration(configService.GetInt("stream_idle_timeout_seconds", int(config.DefaultStreamIdleTimeout/time.Second)))*time.Second,
+		0,
+	)
+	log.Printf("[CONFIG] gpt-image 专用超时: first_byte=%v upstream=%v stream_idle=%v | 全局 stream_idle=%v",
+		gptImageFirstByteTimeout, gptImageUpstreamTimeout, gptImageStreamIdleTimeout, streamIdleTimeout)
+
 	logRetentionDays := configService.GetInt("log_retention_days", 7)
 
 	modelFuzzyMatch := configService.GetBool("model_fuzzy_match", false)
@@ -166,6 +191,11 @@ func NewServer(store storage.Store) *Server {
 		maxKeyRetries:    maxKeyRetries,
 		firstByteTimeout: firstByteTimeout,
 		nonStreamTimeout: nonStreamTimeout,
+		// gpt-image 系列专用超时
+		gptImageFirstByteTimeout:  gptImageFirstByteTimeout,
+		gptImageUpstreamTimeout:   gptImageUpstreamTimeout,
+		gptImageStreamIdleTimeout: gptImageStreamIdleTimeout,
+		streamIdleTimeout:         streamIdleTimeout,
 		// 模型匹配配置（启动时加载，修改后重启生效）
 		modelFuzzyMatch: modelFuzzyMatch,
 

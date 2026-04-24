@@ -11,6 +11,29 @@ const (
 	DefaultFirstByteTimeout = 30 * time.Second
 )
 
+// gpt-image 系列模型专用超时（上游链路常有 100s+ 卡死/提前断流问题）
+// 默认值设计要点：
+//   - 首字节超时 30s：只有 "响应头都没开始回" 才触发，正常生图 1-5 分钟不会命中
+//   - 非流整体超时 90s：非流式生图罕见，默认保守快失败；需要长非流生图的用户可上调
+//   - 流式 idle 45s：首字节后，只要上游持续发任何字节（含心跳/进度事件）就重置，
+//     所以 1-5 分钟正常流式生图也不会被误杀；仅在"静默无进展"时触发
+const (
+	// DefaultGPTImageFirstByteTimeout gpt-image 模型首字节超时（秒）
+	DefaultGPTImageFirstByteTimeout = 30 * time.Second
+
+	// DefaultGPTImageUpstreamTimeout gpt-image 非流式上游整体等待超时（秒）
+	// 低于全局 non_stream_timeout 以实现"快失败"，避免单次请求吃掉完整 10 分钟窗口
+	DefaultGPTImageUpstreamTimeout = 90 * time.Second
+
+	// DefaultGPTImageStreamIdleTimeout gpt-image 流式首字节后无进展容忍（秒）
+	// 首字节后连续 N 秒没有任何字节/事件/心跳就判定上游"静默卡死"
+	DefaultGPTImageStreamIdleTimeout = 45 * time.Second
+
+	// DefaultStreamIdleTimeout 全局流式 idle 超时（秒），0 = 关闭
+	// 预留给未来扩展到通用模型，当前默认关闭，只有 gpt-image 命中独立的 idle 保护
+	DefaultStreamIdleTimeout = 0 * time.Second
+)
+
 // HTTP服务器配置常量
 const (
 	// DefaultMaxConcurrency 默认最大并发请求数

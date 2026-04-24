@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"ccLoad/internal/util"
 )
 
 // requestContext 封装单次请求的上下文和超时控制
@@ -18,21 +20,87 @@ type requestContext struct {
 	isStreaming       bool
 	firstByteTimer    *time.Timer
 	firstByteTimedOut atomic.Bool
+
+	// 首字节超时阈值（用于日志打印）
+	firstByteTimeoutUsed time.Duration
+
+	// [INFO] gpt-image 等上游容易静默卡死的模型：首字节后仍需 idle watchdog
+	// 只要上游持续有字节/事件/心跳进展就重置，正常 1-5 分钟流式生图不会被误杀
+	streamIdleTimeout  time.Duration // 0 = 关闭 idle watchdog
+	streamIdleTimer    *time.Timer
+	streamIdleFired    atomic.Bool
+	streamIdleOnExpire func() // 到期时的回调（通常是关闭上游 body），由 handleResponse 注入
+	lastProgressAt     atomic.Int64
+
+	// 是否命中 gpt-image 专用超时路径（用于日志/诊断）
+	isGPTImageModel bool
+}
+
+// timeoutsDecision 汇总单次请求的超时决策结果
+type timeoutsDecision struct {
+	overallTimeout    time.Duration // 整体超时（非流式）；0=不限制
+	firstByteTimeout  time.Duration // 首字节超时；0=不挂 firstByteTimer
+	streamIdleTimeout time.Duration // 流式 idle 超时；0=关闭
+}
+
+// resolveTimeouts 按模型+请求类型，决定本次请求各类超时
+// 设计：gpt-image 系列独立一套阈值；其他模型保持现有行为
+func (s *Server) resolveTimeouts(isStreaming bool, model string, body []byte) timeoutsDecision {
+	isImage := util.IsGPTImageModel(model)
+
+	if isStreaming {
+		var ttfb time.Duration
+		switch {
+		case isImage && s.gptImageFirstByteTimeout > 0:
+			ttfb = s.gptImageFirstByteTimeout
+		default:
+			ttfb = modelFirstByteTimeout(s.firstByteTimeout, model, body)
+		}
+		var idle time.Duration
+		switch {
+		case isImage && s.gptImageStreamIdleTimeout > 0:
+			idle = s.gptImageStreamIdleTimeout
+		case s.streamIdleTimeout > 0:
+			idle = s.streamIdleTimeout
+		}
+		return timeoutsDecision{
+			firstByteTimeout:  ttfb,
+			streamIdleTimeout: idle,
+		}
+	}
+
+	// 非流式
+	overall := s.nonStreamTimeout
+	if isImage && s.gptImageUpstreamTimeout > 0 {
+		// 取更小者：不会让 gpt-image 非流请求超过 nonStreamTimeout，但允许更短的专用上限
+		if overall == 0 || s.gptImageUpstreamTimeout < overall {
+			overall = s.gptImageUpstreamTimeout
+		}
+	}
+	var ttfb time.Duration
+	if isImage && s.gptImageFirstByteTimeout > 0 {
+		ttfb = s.gptImageFirstByteTimeout
+	}
+	return timeoutsDecision{
+		overallTimeout:   overall,
+		firstByteTimeout: ttfb,
+	}
 }
 
 // newRequestContext 创建请求上下文（处理超时控制）
 // 设计原则：
-// - 流式请求：使用 firstByteTimeout（首字节超时，按模型分级），之后不限制
-// - 非流式请求：使用 nonStreamTimeout（整体超时），超时主动关闭上游连接
+// - 流式请求：使用 firstByteTimeout（首字节超时，按模型分级），之后可选 idle watchdog
+// - 非流式请求：使用 nonStreamTimeout（整体超时），gpt-image 额外挂 TTFB watchdog
 func (s *Server) newRequestContext(parentCtx context.Context, requestPath string, body []byte, model string) *requestContext {
 	isStreaming := isStreamingRequest(requestPath, body)
+	decision := s.resolveTimeouts(isStreaming, model, body)
 
 	ctx, cancel := context.WithCancel(parentCtx)
 
-	// 非流式请求：在基础 cancel 之上叠加整体超时
-	if !isStreaming && s.nonStreamTimeout > 0 {
+	// 非流式请求：在基础 cancel 之上叠加整体超时（gpt-image 可能用更短的专用值）
+	if !isStreaming && decision.overallTimeout > 0 {
 		var timeoutCancel context.CancelFunc
-		ctx, timeoutCancel = context.WithTimeout(ctx, s.nonStreamTimeout)
+		ctx, timeoutCancel = context.WithTimeout(ctx, decision.overallTimeout)
 		originalCancel := cancel
 		cancel = func() {
 			timeoutCancel()
@@ -41,21 +109,21 @@ func (s *Server) newRequestContext(parentCtx context.Context, requestPath string
 	}
 
 	reqCtx := &requestContext{
-		ctx:         ctx,
-		cancel:      cancel,
-		startTime:   time.Now(),
-		isStreaming: isStreaming,
+		ctx:                  ctx,
+		cancel:               cancel,
+		startTime:            time.Now(),
+		isStreaming:          isStreaming,
+		streamIdleTimeout:    decision.streamIdleTimeout,
+		firstByteTimeoutUsed: decision.firstByteTimeout,
+		isGPTImageModel:      util.IsGPTImageModel(model),
 	}
 
-	// 流式请求：按模型分级设置首字节超时
-	if isStreaming {
-		timeout := modelFirstByteTimeout(s.firstByteTimeout, model, body)
-		if timeout > 0 {
-			reqCtx.firstByteTimer = time.AfterFunc(timeout, func() {
-				reqCtx.firstByteTimedOut.Store(true)
-				cancel()
-			})
-		}
+	// 挂首字节超时：流式用 firstByteTimer；非流式 gpt-image 也挂（只有响应头都没回才触发）
+	if decision.firstByteTimeout > 0 {
+		reqCtx.firstByteTimer = time.AfterFunc(decision.firstByteTimeout, func() {
+			reqCtx.firstByteTimedOut.Store(true)
+			cancel()
+		})
 	}
 
 	return reqCtx
@@ -142,6 +210,59 @@ func (rc *requestContext) firstByteTimeoutTriggered() bool {
 	return rc.firstByteTimedOut.Load()
 }
 
+// startStreamIdleWatchdog 启动流式 idle watchdog
+// 通常在首字节到达时调用；onExpire 用于关闭上游 body 以打断阻塞 Read
+// onExpire 必须幂等（可能被多次调用或与正常关闭并发）
+func (rc *requestContext) startStreamIdleWatchdog(onExpire func()) {
+	if rc.streamIdleTimeout <= 0 || onExpire == nil {
+		return
+	}
+	rc.streamIdleOnExpire = onExpire
+	rc.lastProgressAt.Store(time.Now().UnixNano())
+	rc.streamIdleTimer = time.AfterFunc(rc.streamIdleTimeout, rc.onStreamIdleExpire)
+}
+
+// resetStreamIdleWatchdog 收到字节/事件后重置 idle timer
+// 由 firstByteDetector.onBytesRead 调用，高频小开销：定长 Reset
+func (rc *requestContext) resetStreamIdleWatchdog() {
+	if rc.streamIdleTimer == nil {
+		return
+	}
+	rc.lastProgressAt.Store(time.Now().UnixNano())
+	rc.streamIdleTimer.Reset(rc.streamIdleTimeout)
+}
+
+func (rc *requestContext) stopStreamIdleWatchdog() {
+	if rc.streamIdleTimer != nil {
+		rc.streamIdleTimer.Stop()
+	}
+}
+
+// onStreamIdleExpire idle timer 到期回调
+// 设置 fired 标志并执行 onExpire（关闭上游 body 打断阻塞 Read）
+func (rc *requestContext) onStreamIdleExpire() {
+	// 双重检查：已触发就别重复执行回调
+	if rc.streamIdleFired.Swap(true) {
+		return
+	}
+	if rc.streamIdleOnExpire != nil {
+		rc.streamIdleOnExpire()
+	}
+}
+
+func (rc *requestContext) streamIdleTimeoutTriggered() bool {
+	return rc.streamIdleFired.Load()
+}
+
+// streamIdleDuration 返回从上次进展到现在的时长（用于日志）
+func (rc *requestContext) streamIdleDuration() time.Duration {
+	last := rc.lastProgressAt.Load()
+	if last == 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, last))
+}
+
 // Duration 返回从请求开始到现在的时间
 func (rc *requestContext) Duration() time.Duration {
 	return time.Since(rc.startTime)
@@ -150,6 +271,7 @@ func (rc *requestContext) Duration() time.Duration {
 // cleanup 统一清理请求上下文资源（定时器 + context）
 // [INFO] 符合 Go 惯用法：defer reqCtx.cleanup() 一行搞定
 func (rc *requestContext) cleanup() {
-	rc.stopFirstByteTimer() // 停止首字节超时定时器
-	rc.cancel()             // 取消 context（总是非 nil，无需检查）
+	rc.stopFirstByteTimer()     // 停止首字节超时定时器
+	rc.stopStreamIdleWatchdog() // 停止 idle watchdog
+	rc.cancel()                 // 取消 context（总是非 nil，无需检查）
 }

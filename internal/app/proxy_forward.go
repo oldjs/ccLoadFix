@@ -424,24 +424,38 @@ func (s *Server) handleResponse(
 	hdrClone := resp.Header
 
 	// 首字节响应时间（秒）：以第一次从 resp.Body 读到 n>0 的时刻为准。
-	// 流式请求：该时刻同时用于停止 firstByteTimeout。
+	// 流式请求：该时刻同时用于停止 firstByteTimeout，并启动 idle watchdog（如配置）。
 	firstBodyReadTimeSec := 0.0
 	readStats := &streamReadStats{}
+	// 捕获上游 body 引用用于 idle watchdog 到期关闭（关闭是幂等的）
+	bodyRef := resp.Body
 	resp.Body = &firstByteDetector{
 		ReadCloser: resp.Body,
 		stats:      readStats,
 		onFirstRead: func() {
-			if reqCtx.isStreaming {
-				reqCtx.stopFirstByteTimer()
-			}
+			// 首字节到达：停掉 TTFB watchdog
+			// 非流式 gpt-image 也挂了 firstByteTimer，这里一并停掉
+			reqCtx.stopFirstByteTimer()
 			if firstBodyReadTimeSec == 0 {
 				firstBodyReadTimeSec = reqCtx.Duration().Seconds()
 			}
-			if reqCtx.isStreaming && observer != nil && observer.OnFirstByteRead != nil {
-				observer.OnFirstByteRead()
+			if reqCtx.isStreaming {
+				// 流式：首字节后启动 idle watchdog（如配置了 streamIdleTimeout）
+				// 到期关闭上游 body 让阻塞的 Read 返回错误，上层将其包装为 ErrUpstreamReadIdleTimeout
+				reqCtx.startStreamIdleWatchdog(func() {
+					_ = bodyRef.Close()
+				})
+				if observer != nil && observer.OnFirstByteRead != nil {
+					observer.OnFirstByteRead()
+				}
 			}
 		},
 		onBytesRead: func(n int64) {
+			// 有任何字节进展就重置 idle timer（含心跳/ping/事件数据）
+			// 这样正常 1-5 分钟流式生图只要上游持续发字节就不会被误杀
+			if reqCtx.isStreaming {
+				reqCtx.resetStreamIdleWatchdog()
+			}
 			if observer != nil && observer.OnBytesRead != nil {
 				observer.OnBytesRead(n)
 			}
@@ -581,16 +595,60 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	// 此时 streamCopy 返回 context.Canceled，但实际原因是首字节超时
 	// 需要将错误包装为 ErrUpstreamFirstByteTimeout，确保正确分类和日志记录
 	if err != nil && reqCtx.firstByteTimeoutTriggered() {
+		ttfb := reqCtx.firstByteTimeoutUsed
+		if ttfb <= 0 {
+			ttfb = s.firstByteTimeout
+		}
 		timeoutMsg := fmt.Sprintf("upstream first byte timeout after %.2fs", duration)
-		if s.firstByteTimeout > 0 {
-			timeoutMsg = fmt.Sprintf("%s (threshold=%v)", timeoutMsg, s.firstByteTimeout)
+		if ttfb > 0 {
+			timeoutMsg = fmt.Sprintf("%s (threshold=%v)", timeoutMsg, ttfb)
+		}
+		if reqCtx.isGPTImageModel {
+			timeoutMsg = "[gpt-image fast-fail] " + timeoutMsg
 		}
 		err = fmt.Errorf("%s: %w", timeoutMsg, util.ErrUpstreamFirstByteTimeout)
 		res.Status = util.StatusFirstByteTimeout
-		log.Printf("[TIMEOUT] [上游首字节超时-流传输中断] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, s.firstByteTimeout, duration)
+		log.Printf("[TIMEOUT] [上游首字节超时-流传输中断] 渠道ID=%d 模型=%s gpt_image=%v 阈值=%v 实际耗时=%.2fs",
+			cfg.ID, model, reqCtx.isGPTImageModel, ttfb, duration)
+	}
+
+	// [INFO] 2026-04: 流式 idle watchdog 触发：首字节已到但后续完全无进展
+	// 说明上游链路静默卡死，升级为 ErrUpstreamReadIdleTimeout（分类为 599 + 渠道级 + 可重试）
+	if err != nil && reqCtx.streamIdleTimeoutTriggered() {
+		idleDur := reqCtx.streamIdleDuration()
+		ttfb := firstBodyReadTimeSec(res)
+		prefix := ""
+		if reqCtx.isGPTImageModel {
+			prefix = "[gpt-image stream-idle] "
+		}
+		err = fmt.Errorf("%supstream stream idle timeout: no progress for %.2fs after TTFB=%.2fs (threshold=%v): %w",
+			prefix, idleDur.Seconds(), ttfb, reqCtx.streamIdleTimeout, util.ErrUpstreamReadIdleTimeout)
+		res.Status = util.StatusStreamIncomplete
+		log.Printf("[TIMEOUT] [流式idle超时] 渠道ID=%d 模型=%s gpt_image=%v idle=%.2fs 阈值=%v URL=%s",
+			cfg.ID, model, reqCtx.isGPTImageModel, idleDur.Seconds(), reqCtx.streamIdleTimeout, baseURL)
+	}
+
+	// [INFO] 2026-04: gpt-image 上游返回 408 且响应体含 "stream disconnected/response.completed" 特征
+	// 场景：上游是代理 -> 更上游，内部 SSE 流提前断了，上游把失败包成 HTTP 408 回给我们
+	// 默认 408 是 ErrorLevelClient（不重试、直接透传），这里升级为 StatusStreamIncomplete
+	// 让现有冷却 + URL/渠道切换链路接管，客户端不至于等死
+	if err == nil && res != nil && res.Status == 408 &&
+		reqCtx.isGPTImageModel && util.BodyLooksLikeStreamIncomplete(res.Body) {
+		log.Printf("[UPGRADE] [gpt-image 408 stream-incomplete] 渠道ID=%d 模型=%s URL=%s body=%s",
+			cfg.ID, model, baseURL, safeBodyToString(res.Body))
+		res.StreamDiagMsg = fmt.Sprintf("gpt-image upstream 408 stream-incomplete: %s", safeBodyToString(res.Body))
+		res.Status = util.StatusStreamIncomplete
 	}
 
 	return res, duration, err
+}
+
+// firstBodyReadTimeSec 从 res 中取出首字节时间（容错 nil）
+func firstBodyReadTimeSec(res *fwResult) float64 {
+	if res == nil {
+		return 0
+	}
+	return res.FirstByteTime
 }
 
 // ============================================================================
