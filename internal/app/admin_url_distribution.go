@@ -28,12 +28,12 @@ type URLDistributionEntry struct {
 
 // URLDistributionResponse URL 分发面板的总响应
 type URLDistributionResponse struct {
-	Entries          []URLDistributionEntry `json:"entries"`
-	TotalSelections  int64                  `json:"total_selections"`
-	TotalURLs        int                    `json:"total_urls"`
-	ActiveURLs       int                    `json:"active_urls"`        // 最近 IdleThresholdMs 内被选过的
-	IdleURLs         int                    `json:"idle_urls"`          // 超过 IdleThresholdMs 没被选过 / 从未被选
-	IdleThresholdMs  int64                  `json:"idle_threshold_ms"`  // 闲置阈值（毫秒），默认 5 分钟
+	Entries         []URLDistributionEntry `json:"entries"`
+	TotalSelections int64                  `json:"total_selections"`
+	TotalURLs       int                    `json:"total_urls"`
+	ActiveURLs      int                    `json:"active_urls"`       // 最近 IdleThresholdMs 内被选过的
+	IdleURLs        int                    `json:"idle_urls"`         // 超过 IdleThresholdMs 没被选过 / 从未被选
+	IdleThresholdMs int64                  `json:"idle_threshold_ms"` // 闲置阈值（毫秒），默认 5 分钟
 }
 
 // HandleURLDistribution 返回所有渠道的 URL 分发统计（管理员面板用）

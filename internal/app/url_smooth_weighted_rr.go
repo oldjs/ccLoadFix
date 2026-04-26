@@ -203,10 +203,10 @@ func (rr *URLSmoothWeightedRR) Cleanup(maxAge time.Duration) {
 // URLSelectionStat 单个 URL 的分发统计快照（admin 面板用）
 type URLSelectionStat struct {
 	URL              string `json:"url"`
-	Selections       int64  `json:"selections"`           // 累计被选次数（轮询命中数）
-	LastSelectedAtMs int64  `json:"last_selected_at_ms"`  // Unix 毫秒，0 表示从未被选
-	IdleMs           int64  `json:"idle_ms"`              // 距最后选中过去多久（毫秒），-1 表示从未被选
-	CurrentWeight    int64  `json:"current_weight"`       // SmoothWRR 当前权重（可正可负）
+	Selections       int64  `json:"selections"`          // 累计被选次数（轮询命中数）
+	LastSelectedAtMs int64  `json:"last_selected_at_ms"` // Unix 毫秒，0 表示从未被选
+	IdleMs           int64  `json:"idle_ms"`             // 距最后选中过去多久（毫秒），-1 表示从未被选
+	CurrentWeight    int64  `json:"current_weight"`      // SmoothWRR 当前权重（可正可负）
 }
 
 // URLChannelDistribution 单个渠道的 URL 分发快照
