@@ -79,10 +79,14 @@ type urlShard struct {
 	nextCleanup       time.Time                           // 本分片下次清理时间
 }
 
-// URLSelector 基于EWMA延迟、成功率和模型亲和性选择最优URL
+// URLSelector 基于EWMA延迟、成功率和平滑加权轮询选择URL
 // 按 channelID 分片：不同渠道的操作完全无锁竞争
 type URLSelector struct {
 	shards [urlShardCount]urlShard
+
+	// urlBalancer 决定 URL 首跳：用 SmoothWRR 替换原来的加权随机，
+	// 保证所有 weight>0 的 URL 都被周期访问，根治"号池闲置"扎堆问题
+	urlBalancer *URLSmoothWeightedRR
 
 	// 配置（只读，初始化后不变）
 	alpha           float64       // EWMA权重因子
@@ -133,6 +137,7 @@ func initShard(sh *urlShard) {
 func NewURLSelector() *URLSelector {
 	now := time.Now()
 	sel := &URLSelector{
+		urlBalancer:     NewURLSmoothWeightedRR(),
 		alpha:           0.3,
 		cooldownBase:    45 * time.Second,
 		cooldownMax:     4 * time.Hour, // 死URL最长冷却4小时
@@ -279,6 +284,11 @@ func (s *URLSelector) PruneChannel(channelID int64, keepURLs []string) {
 
 	// warm 备选跟着 URL 变更剔除已删除的 URL
 	pruneWarmsForChannel(sh, channelID, keep)
+
+	// SmoothWRR 状态也跟着剪枝，避免被删 URL 留在轮询计数里干扰面板
+	if s.urlBalancer != nil {
+		s.urlBalancer.PruneChannel(channelID, keep)
+	}
 }
 
 // RemoveChannel 移除指定渠道的全部 URL 状态（含亲和性）。
@@ -328,6 +338,11 @@ func (s *URLSelector) RemoveChannel(channelID int64) {
 
 	// 清理 warm 备选
 	removeWarmsForChannel(sh, channelID)
+
+	// SmoothWRR 状态整渠道清掉
+	if s.urlBalancer != nil {
+		s.urlBalancer.RemoveChannel(channelID)
+	}
 }
 
 // recordSuccessInShard 记录成功（调用方已持有写锁）

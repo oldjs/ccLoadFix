@@ -70,6 +70,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'nav.trend': '请求趋势',
   'nav.logs': '日志',
   'nav.affinity': '路由亲和',
+  'nav.urlDistribution': 'URL 分发',
   'nav.modelTest': '模型测试',
   'nav.settings': '设置',
   'nav.githubRepo': 'GitHub仓库',
@@ -1121,5 +1122,38 @@ window.I18N_LOCALES['zh-CN'] = {
   'affinity.loadFailed': '加载失败',
   'affinity.emptyChannel': '暂无渠道亲和',
   'affinity.emptyURL': '暂无 URL 亲和',
-  'affinity.emptyWarm': '暂无 warm 备选'
+  'affinity.emptyWarm': '暂无 warm 备选',
+
+  // ============================================================
+  // URL 分发面板
+  // ============================================================
+  'urlDist.title': 'URL 分发 - Claude Code & Codex Proxy',
+  'urlDist.refresh': '刷新',
+  'urlDist.autoRefresh': '自动刷新（5秒）',
+  'urlDist.updatedAt': '更新于 {time}',
+  'urlDist.summaryTitle': '总览',
+  'urlDist.summaryDesc': '活跃 URL = 最近 5 分钟内被分发到过的',
+  'urlDist.totalSelections': '总分发次数',
+  'urlDist.totalURLs': 'URL 总数',
+  'urlDist.activeURLs': '活跃 URL',
+  'urlDist.idleURLs': '闲置 URL',
+  'urlDist.tableTitle': 'URL 分发明细',
+  'urlDist.tableDesc': '按分发次数倒序，柱状图直观展示扎堆程度',
+  'urlDist.colChannel': '渠道',
+  'urlDist.colURL': 'URL',
+  'urlDist.colSelections': '分发次数',
+  'urlDist.colSuccessRate': '成功率',
+  'urlDist.colEWMA': 'EWMA 延迟',
+  'urlDist.colWeight': '轮询权重',
+  'urlDist.colLastUsed': '最后使用',
+  'urlDist.colStatus': '状态',
+  'urlDist.statusActive': '活跃',
+  'urlDist.statusIdle': '闲置',
+  'urlDist.statusUnused': '未使用',
+  'urlDist.statusCooled': '冷却中',
+  'urlDist.statusSlow': '慢隔离',
+  'urlDist.never': '从未',
+  'urlDist.idleAgo': '{age} 前',
+  'urlDist.empty': '暂无分发数据，等首次请求进来后即可看到分布',
+  'urlDist.loadFailed': '加载失败'
 };

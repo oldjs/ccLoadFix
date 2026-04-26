@@ -5,28 +5,41 @@ import (
 	"time"
 )
 
-// TestWarm_HitAfterAffinityCleared 主亲和被清除后，warm 命中的 URL 应作为确定性首跳，
-// 不再受 weighted-random 的概率偏差影响。
+// TestWarm_HitAfterAffinityCleared 亲和清除后，warm URL 仍是最低延迟，
+// 在 SmoothWRR 下应占据多数（但不再 100% 独占）。
+//
+// 2026-04 行为变更：URL 选择改用平滑加权轮询根治扎堆问题，warm 不再硬选首跳。
+// 但 warm URL 通常就是延迟最低的，权重最高，仍会被 SmoothWRR 频繁选中。
 func TestWarm_HitAfterAffinityCleared(t *testing.T) {
 	sel := NewURLSelector()
 	urls := []string{"https://a.com", "https://b.com", "https://c.com"}
 
-	// 先让三个 URL 都有 EWMA，A 最快
+	// A=100ms, B=150ms, C=200ms → 权重比 6:4:3（按 1/latency × scale 取整后）
 	sel.RecordLatency(1, "https://a.com", 100*time.Millisecond)
 	sel.RecordLatency(1, "https://b.com", 150*time.Millisecond)
 	sel.RecordLatency(1, "https://c.com", 200*time.Millisecond)
 
-	// 成功过的 A 进入亲和 + warm
 	sel.SetModelAffinity(1, "gpt-4", "https://a.com")
-	// 主亲和丢失（模拟一次失败触发 Clear）
 	sel.ClearModelAffinity(1, "gpt-4", "https://a.com")
 
-	// warm 应该稳定把 A 作为首跳，100 次应该全是 A
-	for range 100 {
+	// SmoothWRR：A 最快 → 拿最大份额；B/C 也都被周期访问，绝不会 100% 独占
+	const rounds = 1300
+	counts := map[string]int{}
+	for range rounds {
 		selected, _ := sel.SelectURLForModel(1, "gpt-4", urls)
-		if selected != "https://a.com" {
-			t.Fatalf("warm fallback expected A every time, got %s", selected)
-		}
+		counts[selected]++
+	}
+	// A 是最快的，应占最多但不到 100%
+	if counts["https://a.com"] < counts["https://b.com"] || counts["https://a.com"] < counts["https://c.com"] {
+		t.Fatalf("expected A to dominate after warm but got counts=%v", counts)
+	}
+	// B 和 C 都必须被选到（号池利用率证据）
+	if counts["https://b.com"] == 0 || counts["https://c.com"] == 0 {
+		t.Fatalf("expected all URLs to be periodically selected, counts=%v", counts)
+	}
+	// A 不应 100% 独占（关键根治证据）
+	if counts["https://a.com"] >= rounds {
+		t.Fatalf("expected SmoothWRR to share traffic, but A got 100%%: %v", counts)
 	}
 }
 
@@ -114,36 +127,36 @@ func TestWarm_CapacityBoundedToThree(t *testing.T) {
 	}
 }
 
-// TestWarm_AffinityTakesPriorityOverWarm 主亲和仍存在时不走 warm 硬选路径。
-// 行为：affinity 的 1.5x 乘数生效，weighted random 占主导（不保证全选 A）。
-func TestWarm_AffinityTakesPriorityOverWarm(t *testing.T) {
+// TestWarm_AffinityDoesNotMonopolize affinity 状态仍被记录（admin 可查），
+// 但不再影响 URL 选择 —— SmoothWRR 按延迟权重平滑分配，等延迟下两个 URL 各占约 50%。
+//
+// 2026-04 行为变更：去掉了 softAffinityMultiplier 的 1.5x 加权，affinity URL 不再获得权重倍增。
+func TestWarm_AffinityDoesNotMonopolize(t *testing.T) {
 	sel := NewURLSelector()
 	urls := []string{"https://a.com", "https://b.com"}
 
+	// 等延迟 → 等权重 → SmoothWRR 应严格 1:1 轮询
 	sel.RecordLatency(1, "https://a.com", 100*time.Millisecond)
 	sel.RecordLatency(1, "https://b.com", 100*time.Millisecond)
 
-	// 两次 SetModelAffinity：warm 里 [B, A]，affinity 指向 B
 	sel.SetModelAffinity(1, "gpt-4", "https://a.com")
 	sel.SetModelAffinity(1, "gpt-4", "https://b.com")
 
-	// affinity 存在 → 不应走 warm 硬选。concrete 验证：B 有 1.5x 优势但 A 仍有概率被选中
-	aSeen := false
-	bSeen := false
-	for range 500 {
+	const rounds = 1000
+	counts := map[string]int{}
+	for range rounds {
 		selected, _ := sel.SelectURLForModel(1, "gpt-4", urls)
-		switch selected {
-		case "https://a.com":
-			aSeen = true
-		case "https://b.com":
-			bSeen = true
-		}
-		if aSeen && bSeen {
-			break
-		}
+		counts[selected]++
 	}
-	if !aSeen || !bSeen {
-		t.Fatalf("affinity path should keep weighted-random distribution, aSeen=%v bSeen=%v", aSeen, bSeen)
+	// 等权重下严格 50:50（SmoothWRR 是确定性的，允许 ±5% 误差留给 canary 探索）
+	a := counts["https://a.com"]
+	b := counts["https://b.com"]
+	if a == 0 || b == 0 {
+		t.Fatalf("expected both URLs to be selected periodically, counts=%v", counts)
+	}
+	ratio := float64(a) / float64(rounds)
+	if ratio < 0.45 || ratio > 0.55 {
+		t.Fatalf("expected ~50/50 split with equal weights and no affinity bias, got A=%.1f%%", ratio*100)
 	}
 }
 

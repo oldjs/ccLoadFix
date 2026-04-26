@@ -70,6 +70,7 @@ window.I18N_LOCALES['en'] = {
   'nav.trend': 'Trends',
   'nav.logs': 'Logs',
   'nav.affinity': 'Routing Affinity',
+  'nav.urlDistribution': 'URL Distribution',
   'nav.modelTest': 'Model Test',
   'nav.settings': 'Settings',
   'nav.githubRepo': 'GitHub Repository',
@@ -1121,5 +1122,38 @@ window.I18N_LOCALES['en'] = {
   'affinity.loadFailed': 'Load failed',
   'affinity.emptyChannel': 'No channel affinity entries',
   'affinity.emptyURL': 'No URL affinity entries',
-  'affinity.emptyWarm': 'No warm list entries'
+  'affinity.emptyWarm': 'No warm list entries',
+
+  // ============================================================
+  // URL Distribution Panel
+  // ============================================================
+  'urlDist.title': 'URL Distribution - Claude Code & Codex Proxy',
+  'urlDist.refresh': 'Refresh',
+  'urlDist.autoRefresh': 'Auto refresh (5s)',
+  'urlDist.updatedAt': 'Updated at {time}',
+  'urlDist.summaryTitle': 'Summary',
+  'urlDist.summaryDesc': 'Active URLs = those selected within the last 5 minutes',
+  'urlDist.totalSelections': 'Total Selections',
+  'urlDist.totalURLs': 'Total URLs',
+  'urlDist.activeURLs': 'Active URLs',
+  'urlDist.idleURLs': 'Idle URLs',
+  'urlDist.tableTitle': 'URL Distribution Detail',
+  'urlDist.tableDesc': 'Sorted by selection count desc; bar chart shows traffic concentration',
+  'urlDist.colChannel': 'Channel',
+  'urlDist.colURL': 'URL',
+  'urlDist.colSelections': 'Selections',
+  'urlDist.colSuccessRate': 'Success Rate',
+  'urlDist.colEWMA': 'EWMA Latency',
+  'urlDist.colWeight': 'RR Weight',
+  'urlDist.colLastUsed': 'Last Used',
+  'urlDist.colStatus': 'Status',
+  'urlDist.statusActive': 'Active',
+  'urlDist.statusIdle': 'Idle',
+  'urlDist.statusUnused': 'Unused',
+  'urlDist.statusCooled': 'Cooled',
+  'urlDist.statusSlow': 'Slow Iso',
+  'urlDist.never': 'Never',
+  'urlDist.idleAgo': '{age} ago',
+  'urlDist.empty': 'No distribution data yet; first incoming request will populate this',
+  'urlDist.loadFailed': 'Load failed'
 };

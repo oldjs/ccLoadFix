@@ -13,7 +13,12 @@ const (
 	latencySourceTTFB    = "ttfb"
 
 	defaultEffectiveLatencyMS = 500.0
-	softAffinityMultiplier    = 1.5
+
+	// rrWeightScale SmoothWRR 整数权重缩放因子。
+	// 权重公式：scale * successRate / effectiveLatency
+	// 取 1e6 是为了让极端慢的 URL（penalty 后 40000ms）也能保持权重 25 而非贴底 1，
+	// 确保最慢 vs 次慢之间仍保持比例可分辨；同时不会让 totalWeight 在 64bit int 下溢出。
+	rrWeightScale = 1e6
 )
 
 // sortedURL 排序后的 URL 条目。
@@ -73,22 +78,45 @@ func candidateBaseWeight(c selectorCandidate) float64 {
 	return 1.0 / latency
 }
 
+// candidateScore 用于 fallback 排序的综合得分。
+// 注意：从 2026-04 起不再叠加 affinity 倍增 —— 首跳由 SmoothWRR 决定，affinity 不再
+// 通过权重影响选择。score 仅在 sortCandidatesByScore 里给"非首跳"的 URL 排个合理顺序，
+// 确保主 URL 失败后 fallback 优先用快且稳的备份。
 func candidateScore(c selectorCandidate) float64 {
-	successRate := c.successRate
-	if successRate <= 0 || math.IsNaN(successRate) || math.IsInf(successRate, 0) {
-		successRate = 0.05
+	return candidateBaseWeight(c) * normalizeSuccessRate(c.successRate)
+}
+
+// normalizeSuccessRate 把成功率钳到 [0.05, 1]，避免 0 或异常值
+// 0.05 地板：让长期失败的 URL 仍保留少量轮询配额（用于探测复活）
+func normalizeSuccessRate(rate float64) float64 {
+	if rate <= 0 || math.IsNaN(rate) || math.IsInf(rate, 0) {
+		return 0.05
 	}
-	if successRate < 0.05 {
-		successRate = 0.05
+	if rate < 0.05 {
+		return 0.05
 	}
-	if successRate > 1 {
-		successRate = 1
+	if rate > 1 {
+		return 1
 	}
-	score := candidateBaseWeight(c) * successRate
-	if c.affinity {
-		score *= softAffinityMultiplier
+	return rate
+}
+
+// candidateRRWeight 把候选转换成 SmoothWRR 用的整数权重。
+// 权重 = scale * successRate / effectiveLatency，最小为 1。
+// 设计意图：
+//   - 低延迟 URL 仍然拿到更高份额（与原加权随机相同的比例），但被周期访问而非概率独占
+//   - 长尾慢 URL 即便贴 1 也仍会被选中（每 totalWeight 次轮一次），保证号池利用率
+func candidateRRWeight(c selectorCandidate) int64 {
+	latency := c.effectiveLatency
+	if latency <= 0 {
+		latency = defaultEffectiveLatencyMS
 	}
-	return score
+	successRate := normalizeSuccessRate(c.successRate)
+	w := int64(rrWeightScale * successRate / latency)
+	if w < 1 {
+		w = 1
+	}
+	return w
 }
 
 // SelectURL 从候选 URL 中选一个最优的，不带模型亲和性。
@@ -224,24 +252,44 @@ func splitCandidatesBySource(candidates []selectorCandidate) ([]selectorCandidat
 	return real, probeOnly, unknown
 }
 
-func weightedRandomCandidate(candidates []selectorCandidate) selectorCandidate {
-	totalWeight := 0.0
-	weights := make([]float64, len(candidates))
+// smoothWRRPick 用 SmoothWRR 从候选里选一个。balancer 为 nil 时退化为按 score 取最高（兜底，不应在生产发生）
+func smoothWRRPick(balancer *URLSmoothWeightedRR, channelID int64, candidates []selectorCandidate) selectorCandidate {
+	if len(candidates) == 0 {
+		return selectorCandidate{}
+	}
+	if len(candidates) == 1 {
+		if balancer != nil {
+			balancer.Select(channelID, []string{candidates[0].url}, []int64{1})
+		}
+		return candidates[0]
+	}
+	if balancer == nil {
+		// 兜底路径：找 score 最高的；同分时取索引小的（确定性）
+		bestIdx := 0
+		bestScore := candidateScore(candidates[0])
+		for i := 1; i < len(candidates); i++ {
+			s := candidateScore(candidates[i])
+			if s > bestScore {
+				bestScore = s
+				bestIdx = i
+			}
+		}
+		return candidates[bestIdx]
+	}
+	urls := make([]string, len(candidates))
+	weights := make([]int64, len(candidates))
 	for i, c := range candidates {
-		weights[i] = candidateScore(c)
-		totalWeight += weights[i]
+		urls[i] = c.url
+		weights[i] = candidateRRWeight(c)
 	}
-	if totalWeight <= 0 || math.IsNaN(totalWeight) || math.IsInf(totalWeight, 0) {
-		return candidates[rand.IntN(len(candidates))]
-	}
-	r := rand.Float64() * totalWeight
-	for i, weight := range weights {
-		r -= weight
-		if r <= 0 {
-			return candidates[i]
+	selected := balancer.Select(channelID, urls, weights)
+	for _, c := range candidates {
+		if c.url == selected {
+			return c
 		}
 	}
-	return candidates[len(candidates)-1]
+	// SmoothWRR 没匹配上（理论不会发生）—— 退到第一个候选
+	return candidates[0]
 }
 
 func removeCandidateByURL(candidates []selectorCandidate, rawURL string) []selectorCandidate {
@@ -293,8 +341,11 @@ func sortCandidatesByScore(candidates []selectorCandidate) []selectorCandidate {
 	return sorted
 }
 
-func pickCanaryCandidate(candidates []selectorCandidate) selectorCandidate {
-	return weightedRandomCandidate(candidates)
+// pickCanaryCandidate 从 unknown 候选里选一个做探索探测。
+// 没历史数据时所有 unknown 的权重相同（默认 500ms 等价），SmoothWRR 退化为均匀轮询，
+// 保证号池里所有未被探过的 URL 都能轮到，配合 buildCandidates 的逻辑形成完整探索。
+func pickCanaryCandidate(balancer *URLSmoothWeightedRR, channelID int64, candidates []selectorCandidate) selectorCandidate {
+	return smoothWRRPick(balancer, channelID, candidates)
 }
 
 // markAffinity 标记亲和性候选（调用方已持有读锁）。返回是否命中，便于上层决定是否再尝试 warm 备选。
@@ -316,56 +367,45 @@ func markAffinity(sh *urlShard, channelID int64, model string, candidates []sele
 	return false
 }
 
-func appendCanaryIfNeeded(ordered []selectorCandidate, primary []selectorCandidate, unknown []selectorCandidate) []selectorCandidate {
+func appendCanaryIfNeeded(ordered []selectorCandidate, primary []selectorCandidate, unknown []selectorCandidate, balancer *URLSmoothWeightedRR, channelID int64) []selectorCandidate {
 	if len(unknown) == 0 {
 		return ordered
 	}
 	if len(primary) > 0 && !shouldExploreUnknown(primary) {
 		return ordered
 	}
-	return append(ordered, pickCanaryCandidate(unknown))
+	return append(ordered, pickCanaryCandidate(balancer, channelID, unknown))
 }
 
-func canaryCandidate(primary []selectorCandidate, unknown []selectorCandidate) (selectorCandidate, bool) {
+func canaryCandidate(primary []selectorCandidate, unknown []selectorCandidate, balancer *URLSmoothWeightedRR, channelID int64) (selectorCandidate, bool) {
 	if len(unknown) == 0 {
 		return selectorCandidate{}, false
 	}
 	if len(primary) > 0 && !shouldExploreUnknown(primary) {
 		return selectorCandidate{}, false
 	}
-	return pickCanaryCandidate(unknown), true
+	return pickCanaryCandidate(balancer, channelID, unknown), true
 }
 
-func buildPlannedOrder(primary []selectorCandidate) []selectorCandidate {
+func buildPlannedOrder(primary []selectorCandidate, balancer *URLSmoothWeightedRR, channelID int64) []selectorCandidate {
 	if len(primary) == 0 {
 		return nil
 	}
-	first := pickFirstHop(primary)
+	first := pickFirstHop(primary, balancer, channelID)
 	ordered := []selectorCandidate{first}
 	ordered = append(ordered, sortCandidatesByScore(removeCandidateByURL(primary, first.url))...)
 	return ordered
 }
 
-// pickFirstHop 选首跳：
-// 1) 有 affinity 命中 → 维持原行为（weightedRandomCandidate 内部 1.5x 乘数自然偏向 affinity）
-// 2) 无 affinity 但有 warm 命中 → 硬选 warm，避免主亲和刚失效时靠加权随机抽到次优 URL
-// 3) 都没有 → 原加权随机
-func pickFirstHop(primary []selectorCandidate) selectorCandidate {
-	hasAffinity := false
-	var warmHit *selectorCandidate
-	for i := range primary {
-		if primary[i].affinity {
-			hasAffinity = true
-			break
-		}
-		if warmHit == nil && primary[i].warm {
-			warmHit = &primary[i]
-		}
-	}
-	if !hasAffinity && warmHit != nil {
-		return *warmHit
-	}
-	return weightedRandomCandidate(primary)
+// pickFirstHop 用平滑加权轮询（SmoothWRR）选首跳。
+// 2026-04 重构：彻底去掉 affinity / warm 对首跳的影响。
+//   - 此前的"亲和硬选 + 1.5x 加权"在生产环境造成大号池只用几个 URL 的扎堆问题
+//   - 改用 SmoothWRR 后，所有可用 URL 按 1/EWMA 权重比例被周期访问，号池利用率显著提升
+//
+// affinity / warm 字段仍由 markAffinity / markWarmCandidate 标记，但仅用于 admin 状态展示，
+// 不再驱动选择逻辑。
+func pickFirstHop(primary []selectorCandidate, balancer *URLSmoothWeightedRR, channelID int64) selectorCandidate {
+	return smoothWRRPick(balancer, channelID, primary)
 }
 
 // appendRemainingUnknowns 把还没出现在 ordered 里的 unknown URL 追加到末尾。
@@ -397,11 +437,13 @@ func appendCooldownFallbacks(ordered []selectorCandidate, cooldownFallback []sel
 	return ordered
 }
 
-// planWithCanary 把 canary 混入 primary 的首跳池做加权随机
-func planWithCanary(primary []selectorCandidate, canary selectorCandidate, extraTiers []selectorCandidate, cooledFallback []selectorCandidate) []selectorCandidate {
+// planWithCanary 把 canary 混入 primary 的首跳池，整池走 SmoothWRR 选首跳。
+// canary 的权重由它自己的 candidateRRWeight 决定（unknown URL 会拿到默认 500ms 对应的权重），
+// 在 SmoothWRR 下天然会被周期选中，无需特殊提权。
+func planWithCanary(primary []selectorCandidate, canary selectorCandidate, extraTiers []selectorCandidate, cooledFallback []selectorCandidate, balancer *URLSmoothWeightedRR, channelID int64) []selectorCandidate {
 	firstPool := append([]selectorCandidate(nil), primary...)
 	firstPool = append(firstPool, canary)
-	first := weightedRandomCandidate(firstPool)
+	first := smoothWRRPick(balancer, channelID, firstPool)
 
 	ordered := []selectorCandidate{first}
 	if first.url != canary.url {
@@ -418,9 +460,10 @@ func planWithCanary(primary []selectorCandidate, canary selectorCandidate, extra
 }
 
 // planCandidates 规划候选URL的尝试顺序（调用方已持有读锁）
-func planCandidates(sh *urlShard, channelID int64, model string, urls []string, now time.Time) []selectorCandidate {
+// balancer：SmoothWRR 决定首跳；nil 时退化为按 score 排序的兜底逻辑
+func planCandidates(sh *urlShard, balancer *URLSmoothWeightedRR, channelID int64, model string, urls []string, now time.Time) []selectorCandidate {
 	candidates := buildCandidates(sh, channelID, model, urls, now)
-	// affinity 没命中才查 warm 备选，避免同一 URL 被重复打标
+	// affinity / warm 仍然标记到 candidate 字段，但仅供 admin 状态展示，不影响选择
 	if !markAffinity(sh, channelID, model, candidates) {
 		markWarmCandidate(sh, channelID, model, candidates, now)
 	}
@@ -430,26 +473,26 @@ func planCandidates(sh *urlShard, channelID int64, model string, urls []string, 
 	ordered := make([]selectorCandidate, 0, len(active))
 	switch {
 	case len(real) > 0:
-		if canary, ok := canaryCandidate(real, unknown); ok {
-			planned := planWithCanary(real, canary, probeOnly, cooledFallback)
+		if canary, ok := canaryCandidate(real, unknown, balancer, channelID); ok {
+			planned := planWithCanary(real, canary, probeOnly, cooledFallback, balancer, channelID)
 			return appendRemainingUnknowns(planned, unknown)
 		}
-		ordered = append(ordered, buildPlannedOrder(real)...)
+		ordered = append(ordered, buildPlannedOrder(real, balancer, channelID)...)
 		ordered = append(ordered, sortCandidatesByScore(probeOnly)...)
 		ordered = appendCooldownFallbacks(ordered, cooledFallback)
-		ordered = appendCanaryIfNeeded(ordered, real, unknown)
+		ordered = appendCanaryIfNeeded(ordered, real, unknown, balancer, channelID)
 		ordered = appendRemainingUnknowns(ordered, unknown)
 	case len(probeOnly) > 0:
-		if canary, ok := canaryCandidate(probeOnly, unknown); ok {
-			planned := planWithCanary(probeOnly, canary, nil, cooledFallback)
+		if canary, ok := canaryCandidate(probeOnly, unknown, balancer, channelID); ok {
+			planned := planWithCanary(probeOnly, canary, nil, cooledFallback, balancer, channelID)
 			return appendRemainingUnknowns(planned, unknown)
 		}
-		ordered = append(ordered, buildPlannedOrder(probeOnly)...)
+		ordered = append(ordered, buildPlannedOrder(probeOnly, balancer, channelID)...)
 		ordered = appendCooldownFallbacks(ordered, cooledFallback)
-		ordered = appendCanaryIfNeeded(ordered, probeOnly, unknown)
+		ordered = appendCanaryIfNeeded(ordered, probeOnly, unknown, balancer, channelID)
 		ordered = appendRemainingUnknowns(ordered, unknown)
 	case len(unknown) > 0:
-		ordered = append(ordered, buildPlannedOrder(unknown)...)
+		ordered = append(ordered, buildPlannedOrder(unknown, balancer, channelID)...)
 		ordered = appendCooldownFallbacks(ordered, cooledFallback)
 	}
 
@@ -478,7 +521,7 @@ func (s *URLSelector) planURLsForModel(channelID int64, model string, urls []str
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
 
-	return candidatesToSortedURLs(planCandidates(sh, channelID, model, urls, now))
+	return candidatesToSortedURLs(planCandidates(sh, s.urlBalancer, channelID, model, urls, now))
 }
 
 // SelectURLForModel 从候选 URL 中选一个最优的

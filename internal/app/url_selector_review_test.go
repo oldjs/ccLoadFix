@@ -137,7 +137,14 @@ func TestURLSelector_AffinityEscapesSlowURL_Quantified(t *testing.T) {
 	}
 }
 
-func TestURLSelector_SoftAffinityIsBiasNotShortCircuit(t *testing.T) {
+// TestURLSelector_AffinityNoLongerBiasesSelection 验证 2026-04 重构后的关键行为变更：
+// affinity 字段仍被 markAffinity 记录到 selectorCandidate（admin 状态展示用），
+// 但不再影响 URL 选择 —— 设置 affinity 前后的分布应几乎一致（仅有 SmoothWRR 内部状态推进的微小漂移）。
+//
+// 这是根治"号池扎堆"问题的关键证据：
+//   - 旧实现：affinity URL 通过 softAffinityMultiplier=1.5 拿到 50%+ 权重 → 流量集中
+//   - 新实现：affinity 不再加权，每个 URL 按 1/EWMA 平滑轮询 → 号池均匀利用
+func TestURLSelector_AffinityNoLongerBiasesSelection(t *testing.T) {
 	sel := NewURLSelector()
 	model := "gpt-4.1"
 	urls := []string{"https://best.example", "https://affinity.example", "https://fallback.example"}
@@ -146,24 +153,36 @@ func TestURLSelector_SoftAffinityIsBiasNotShortCircuit(t *testing.T) {
 	sel.RecordLatency(1, urls[1], 900*time.Millisecond)
 	sel.RecordLatency(1, urls[2], 1200*time.Millisecond)
 
-	baseline := runURLSelections(600, func() string {
+	const rounds = 600
+	baseline := runURLSelections(rounds, func() string {
 		picked, _ := sel.SelectURLForModel(1, model, urls)
 		return picked
 	})
 	sel.SetModelAffinity(1, model, urls[1])
-	afterAffinity := runURLSelections(600, func() string {
+	afterAffinity := runURLSelections(rounds, func() string {
 		picked, _ := sel.SelectURLForModel(1, model, urls)
 		return picked
 	})
 
-	t.Logf("soft affinity baseline: %v", formatSelectionStats(urls, baseline, 600))
-	t.Logf("soft affinity after: %v", formatSelectionStats(urls, afterAffinity, 600))
+	t.Logf("baseline: %v", formatSelectionStats(urls, baseline, rounds))
+	t.Logf("after setting affinity on slower URL: %v", formatSelectionStats(urls, afterAffinity, rounds))
 
-	if afterAffinity[urls[1]] <= baseline[urls[1]] {
-		t.Fatalf("expected affinity URL to gain probability after soft bias, baseline=%v after=%v", baseline, afterAffinity)
+	// 关键断言 1：affinity URL（第二慢）的份额没有显著上升 —— affinity 不再加权
+	// 允许 ±5% 漂移（SmoothWRR 内部 currentWeight 状态在两段调用之间会延续）
+	delta := afterAffinity[urls[1]] - baseline[urls[1]]
+	if delta > rounds/20 {
+		t.Fatalf("affinity must NOT bias selection anymore, but affinity URL gained %d/%d slots (>5%%): baseline=%v after=%v",
+			delta, rounds, baseline, afterAffinity)
 	}
-	if afterAffinity[urls[0]] == 0 {
-		t.Fatalf("expected best real URL to remain selectable after affinity bias, after=%v", afterAffinity)
+	// 关键断言 2：最快的 URL 仍占最多份额（权重 = 1/latency 的 SmoothWRR 行为）
+	if afterAffinity[urls[0]] <= afterAffinity[urls[1]] {
+		t.Fatalf("expected fastest URL to keep majority share under SmoothWRR, after=%v", afterAffinity)
+	}
+	// 关键断言 3：所有 URL 都被周期访问（号池利用率证据）
+	for _, u := range urls {
+		if afterAffinity[u] == 0 {
+			t.Fatalf("expected every URL to receive traffic under SmoothWRR, %s got 0: %v", u, afterAffinity)
+		}
 	}
 }
 

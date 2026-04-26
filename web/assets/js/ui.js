@@ -133,6 +133,7 @@
     { key: 'trend', labelKey: 'nav.trend', href: '/web/trend.html', icon: iconTrend },
     { key: 'logs', labelKey: 'nav.logs', href: '/web/logs.html', icon: iconAlert },
     { key: 'affinity', labelKey: 'nav.affinity', href: '/web/affinity.html', icon: iconAffinity },
+    { key: 'url-distribution', labelKey: 'nav.urlDistribution', href: '/web/url-distribution.html', icon: iconDistribution },
     { key: 'model-test', labelKey: 'nav.modelTest', href: '/web/model-test.html', icon: iconTest },
     { key: 'settings', labelKey: 'nav.settings', href: '/web/settings.html', icon: iconSettings },
   ];
@@ -177,6 +178,10 @@
   function iconAffinity() {
     // 链条/绑定图标（Heroicons link）：象征亲和"粘连"
     return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.172 13.828a4 4 0 005.656 0l4-4a4 4 0 10-5.656-5.656l-1.1 1.1"/>`);
+  }
+  function iconDistribution() {
+    // 横向柱状图（Heroicons chart-bar）：象征 URL 分发分布
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6h13M3 12h9M3 18h6"/>`);
   }
   function svg(inner) {
     const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
