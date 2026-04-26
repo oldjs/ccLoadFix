@@ -19,11 +19,16 @@ type URLDistributionEntry struct {
 	SuccessRate        float64 `json:"success_rate"`         // 0..1，无样本时为 1
 	TTFBLatencyMs      float64 `json:"ttfb_latency_ms"`      // 真实 TTFB EWMA，-1 表示无数据
 	EffectiveLatencyMs float64 `json:"effective_latency_ms"` // 含 slow penalty 后的延迟（用于权重计算）
-	CurrentWeight      int64   `json:"current_weight"`       // SmoothWRR 当前权重值（可正可负）
-	LastSelectedAtMs   int64   `json:"last_selected_at_ms"`  // Unix 毫秒，0 表示从未被选
-	IdleMs             int64   `json:"idle_ms"`              // 距最后被选过去多久，-1 表示从未被选
-	CooledDown         bool    `json:"cooled_down"`
-	SlowIsolated       bool    `json:"slow_isolated"`
+	// ConfiguredWeight 决定该 URL 应占多大流量份额的"配置权重"。前端默认展示这个。
+	// 算法：scale × successRate / effectiveLatency；新 URL 拿默认 500ms 等价权重
+	ConfiguredWeight int64 `json:"configured_weight"`
+	// CurrentWeight SmoothWRR 算法的内部 currentWeight 状态（每次被选后会减去 totalWeight，可能为大负数）。
+	// 这是算法的浮动状态，不代表权重排名 —— 仅供调试展示
+	CurrentWeight    int64 `json:"current_weight"`
+	LastSelectedAtMs int64 `json:"last_selected_at_ms"` // Unix 毫秒，0 表示从未被选
+	IdleMs           int64 `json:"idle_ms"`             // 距最后被选过去多久，-1 表示从未被选
+	CooledDown       bool  `json:"cooled_down"`
+	SlowIsolated     bool  `json:"slow_isolated"`
 }
 
 // URLDistributionResponse URL 分发面板的总响应
@@ -94,7 +99,12 @@ func (s *Server) HandleURLDistribution(c *gin.Context) {
 
 		for _, u := range urls {
 			st := statsByURL[u]
-			sel := selByURL[u]
+			sel, hasSel := selByURL[u]
+			// 没在 SmoothWRR 状态里 = 从未被选过；zero-value 的 IdleMs(0) 会被错误归为 active，
+			// 所以这里强制设 -1，与 snapshotStateLocked 的语义保持一致
+			if !hasSel {
+				sel.IdleMs = -1
+			}
 			// 计算成功率
 			rate := 1.0
 			if total := st.Requests + st.Failures; total > 0 {
@@ -110,6 +120,7 @@ func (s *Server) HandleURLDistribution(c *gin.Context) {
 				SuccessRate:        rate,
 				TTFBLatencyMs:      st.TTFBLatencyMs,
 				EffectiveLatencyMs: st.EffectiveLatencyMs,
+				ConfiguredWeight:   computeRRWeight(st.EffectiveLatencyMs, rate),
 				CurrentWeight:      sel.CurrentWeight,
 				LastSelectedAtMs:   sel.LastSelectedAtMs,
 				IdleMs:             sel.IdleMs,

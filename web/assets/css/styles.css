@@ -436,6 +436,15 @@ body {
   gap: var(--space-2);
   flex: 1;
   justify-content: center;
+  /* nav 项变多后桌面端宽度不够时允许横向滚动，比挤成竖排好 */
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  min-width: 0;
+}
+
+.topnav::-webkit-scrollbar {
+  height: 4px;
 }
 
 .topnav-link {
@@ -448,6 +457,25 @@ body {
   text-decoration: none;
   font-weight: var(--font-medium);
   transition: background var(--duration-fast) var(--timing-function), color var(--duration-fast);
+  /* 关键修复：单个 link 内文字不允许折行，否则 10 个 nav 项会被压成竖排 */
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* 中等宽度桌面（笔记本 13"）：把 nav 项 padding 和字号调小，避免溢出滚动 */
+@media (min-width: 769px) and (max-width: 1280px) {
+  .topnav {
+    gap: 2px;
+  }
+  .topnav-link {
+    padding: .4rem .55rem;
+    font-size: 13px;
+    gap: .35rem;
+  }
+  .topnav-link svg {
+    width: 16px;
+    height: 16px;
+  }
 }
 
 .topnav-link:hover {

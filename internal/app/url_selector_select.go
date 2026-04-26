@@ -101,22 +101,22 @@ func normalizeSuccessRate(rate float64) float64 {
 	return rate
 }
 
-// candidateRRWeight 把候选转换成 SmoothWRR 用的整数权重。
+// computeRRWeight 计算 SmoothWRR 用的整数权重（纯函数，方便 admin 面板复用）。
 // 权重 = scale * successRate / effectiveLatency，最小为 1。
 // 设计意图：
 //   - 低延迟 URL 仍然拿到更高份额（与原加权随机相同的比例），但被周期访问而非概率独占
 //   - 长尾慢 URL 即便贴 1 也仍会被选中（每 totalWeight 次轮一次），保证号池利用率
+func computeRRWeight(effectiveLatencyMs, successRate float64) int64 {
+	if effectiveLatencyMs <= 0 {
+		effectiveLatencyMs = defaultEffectiveLatencyMS
+	}
+	successRate = normalizeSuccessRate(successRate)
+	return max(int64(rrWeightScale*successRate/effectiveLatencyMs), 1)
+}
+
+// candidateRRWeight 把候选转换成 SmoothWRR 用的整数权重
 func candidateRRWeight(c selectorCandidate) int64 {
-	latency := c.effectiveLatency
-	if latency <= 0 {
-		latency = defaultEffectiveLatencyMS
-	}
-	successRate := normalizeSuccessRate(c.successRate)
-	w := int64(rrWeightScale * successRate / latency)
-	if w < 1 {
-		w = 1
-	}
-	return w
+	return computeRRWeight(c.effectiveLatency, c.successRate)
 }
 
 // SelectURL 从候选 URL 中选一个最优的，不带模型亲和性。

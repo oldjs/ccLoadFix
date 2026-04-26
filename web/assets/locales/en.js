@@ -1155,5 +1155,11 @@ window.I18N_LOCALES['en'] = {
   'urlDist.never': 'Never',
   'urlDist.idleAgo': '{age} ago',
   'urlDist.empty': 'No distribution data yet; first incoming request will populate this',
-  'urlDist.loadFailed': 'Load failed'
+  'urlDist.loadFailed': 'Load failed',
+  'urlDist.pageSize': 'Per page',
+  'urlDist.searchPlaceholder': 'Search URL / channel',
+  'urlDist.pageInfo': '{start}-{end} of {total}',
+  'urlDist.prev': 'Prev',
+  'urlDist.next': 'Next',
+  'urlDist.noMatch': 'No matching URLs'
 };

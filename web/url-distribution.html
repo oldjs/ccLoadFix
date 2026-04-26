@@ -152,6 +152,78 @@
     .urldist-status.is-idle { background: rgba(148, 163, 184, 0.2); color: #94a3b8; }
     .urldist-status.is-cooled { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
     .urldist-status.is-slow { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
+
+    .urldist-page-controls {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .urldist-pagesize {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+    }
+    .urldist-pagesize select {
+      padding: 4px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--glass-border, rgba(148, 163, 184, 0.3));
+      background: rgba(255, 255, 255, 0.04);
+      color: inherit;
+      font-size: 13px;
+    }
+    .urldist-search {
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--glass-border, rgba(148, 163, 184, 0.3));
+      background: rgba(255, 255, 255, 0.04);
+      color: inherit;
+      font-size: 13px;
+      min-width: 200px;
+    }
+    .urldist-pagination {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      flex-wrap: wrap;
+      font-size: 13px;
+      color: var(--text-secondary, #6b7280);
+    }
+    .urldist-pagination .urldist-page-info {
+      font-variant-numeric: tabular-nums;
+    }
+    .urldist-pagination .urldist-page-buttons {
+      display: inline-flex;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+    .urldist-pagination button {
+      min-width: 32px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--glass-border, rgba(148, 163, 184, 0.3));
+      background: rgba(255, 255, 255, 0.04);
+      color: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      font-variant-numeric: tabular-nums;
+    }
+    .urldist-pagination button:hover:not(:disabled) {
+      background: rgba(99, 102, 241, 0.15);
+    }
+    .urldist-pagination button.is-current {
+      background: rgba(99, 102, 241, 0.25);
+      border-color: rgba(99, 102, 241, 0.5);
+      font-weight: 600;
+    }
+    .urldist-pagination button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
@@ -198,6 +270,18 @@
           <div class="urldist-section-header">
             <h2 class="section-title" data-i18n="urlDist.tableTitle">URL 分发明细</h2>
             <span class="urldist-section-desc" data-i18n="urlDist.tableDesc">按分发次数倒序，柱状图直观展示扎堆程度</span>
+            <div class="urldist-page-controls">
+              <label class="urldist-pagesize">
+                <span data-i18n="urlDist.pageSize">每页</span>
+                <select id="urldist-pagesize-select">
+                  <option value="50" selected>50</option>
+                  <option value="100">100</option>
+                  <option value="200">200</option>
+                  <option value="500">500</option>
+                </select>
+              </label>
+              <input type="search" id="urldist-search" class="urldist-search" data-i18n-placeholder="urlDist.searchPlaceholder" placeholder="搜索 URL / 渠道" />
+            </div>
           </div>
           <div class="table-container">
             <table class="modern-table">
@@ -216,6 +300,7 @@
               <tbody id="urldist-tbody"></tbody>
             </table>
           </div>
+          <div class="urldist-pagination" id="urldist-pagination"></div>
         </section>
       </div>
     </main>

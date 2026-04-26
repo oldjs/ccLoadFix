@@ -1155,5 +1155,11 @@ window.I18N_LOCALES['zh-CN'] = {
   'urlDist.never': '从未',
   'urlDist.idleAgo': '{age} 前',
   'urlDist.empty': '暂无分发数据，等首次请求进来后即可看到分布',
-  'urlDist.loadFailed': '加载失败'
+  'urlDist.loadFailed': '加载失败',
+  'urlDist.pageSize': '每页',
+  'urlDist.searchPlaceholder': '搜索 URL / 渠道名',
+  'urlDist.pageInfo': '第 {start}-{end} 条，共 {total} 条',
+  'urlDist.prev': '上一页',
+  'urlDist.next': '下一页',
+  'urlDist.noMatch': '没有匹配的 URL'
 };
