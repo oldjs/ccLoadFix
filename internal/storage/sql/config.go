@@ -26,7 +26,7 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 			FROM channels c
 			LEFT JOIN api_keys k ON c.id = k.channel_id
 			GROUP BY c.id
-			ORDER BY c.priority DESC, c.id ASC
+			ORDER BY c.id ASC
 	`
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {

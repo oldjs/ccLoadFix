@@ -89,10 +89,10 @@ func TestHandleListChannels(t *testing.T) {
 		t.Errorf("期望3个渠道，实际%d个", len(resp.Data))
 	}
 
-	// 验证按优先级降序排序
-	if len(resp.Data) >= 2 {
-		if resp.Data[0].Priority < resp.Data[1].Priority {
-			t.Error("渠道应该按优先级降序排序")
+	// 验证按 id 升序排序（先创建的渠道排前面，前端会再按优先级重排）
+	for i := 1; i < len(resp.Data); i++ {
+		if resp.Data[i-1].ID > resp.Data[i].ID {
+			t.Errorf("渠道应该按 id 升序排序: %d > %d", resp.Data[i-1].ID, resp.Data[i].ID)
 		}
 	}
 }

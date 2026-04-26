@@ -105,11 +105,11 @@ func TestConfig_ListConfigs(t *testing.T) {
 		t.Errorf("expected 3 configs, got %d", len(configs))
 	}
 
-	// 验证按优先级降序排列
+	// 验证按 id 升序排列（先创建的渠道排前面）
 	for i := 1; i < len(configs); i++ {
-		if configs[i-1].Priority < configs[i].Priority {
-			t.Errorf("configs not sorted by priority DESC: %d < %d",
-				configs[i-1].Priority, configs[i].Priority)
+		if configs[i-1].ID > configs[i].ID {
+			t.Errorf("configs not sorted by id ASC: %d > %d",
+				configs[i-1].ID, configs[i].ID)
 		}
 	}
 }
