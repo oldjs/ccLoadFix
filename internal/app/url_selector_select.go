@@ -103,20 +103,29 @@ func normalizeSuccessRate(rate float64) float64 {
 
 // computeRRWeight 计算 SmoothWRR 用的整数权重（纯函数，方便 admin 面板复用）。
 // 权重 = scale * successRate / effectiveLatency，最小为 1。
+//
+// floorMs：低延迟权重下限（毫秒），>0 时把异常低的延迟夹到此值再算权重。
+// 防御场景：掺假 URL 用极低 TTFB 冒充快速模型；floor 把"看起来快"带来的权重收益封顶，
+// 即便 low-latency guard 漏过一次（如非流式请求），假货也拿不到超高权重。
+//
 // 设计意图：
 //   - 低延迟 URL 仍然拿到更高份额（与原加权随机相同的比例），但被周期访问而非概率独占
 //   - 长尾慢 URL 即便贴 1 也仍会被选中（每 totalWeight 次轮一次），保证号池利用率
-func computeRRWeight(effectiveLatencyMs, successRate float64) int64 {
+//   - 异常低延迟（<floor）不再线性放大权重，封顶在 1/floor
+func computeRRWeight(effectiveLatencyMs, successRate, floorMs float64) int64 {
 	if effectiveLatencyMs <= 0 {
 		effectiveLatencyMs = defaultEffectiveLatencyMS
+	}
+	if floorMs > 0 && effectiveLatencyMs < floorMs {
+		effectiveLatencyMs = floorMs
 	}
 	successRate = normalizeSuccessRate(successRate)
 	return max(int64(rrWeightScale*successRate/effectiveLatencyMs), 1)
 }
 
 // candidateRRWeight 把候选转换成 SmoothWRR 用的整数权重
-func candidateRRWeight(c selectorCandidate) int64 {
-	return computeRRWeight(c.effectiveLatency, c.successRate)
+func candidateRRWeight(c selectorCandidate, floorMs float64) int64 {
+	return computeRRWeight(c.effectiveLatency, c.successRate, floorMs)
 }
 
 // SelectURL 从候选 URL 中选一个最优的，不带模型亲和性。
@@ -276,11 +285,12 @@ func smoothWRRPick(balancer *URLSmoothWeightedRR, channelID int64, candidates []
 		}
 		return candidates[bestIdx]
 	}
+	floor := float64(balancer.WeightFloorMs())
 	urls := make([]string, len(candidates))
 	weights := make([]int64, len(candidates))
 	for i, c := range candidates {
 		urls[i] = c.url
-		weights[i] = candidateRRWeight(c)
+		weights[i] = candidateRRWeight(c, floor)
 	}
 	selected := balancer.Select(channelID, urls, weights)
 	for _, c := range candidates {

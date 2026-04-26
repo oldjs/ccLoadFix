@@ -2,6 +2,7 @@ package app
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,6 +18,13 @@ import (
 // （EWMA 延迟本身是 channel-URL 维度，不区分 model；同渠道的 model 共享 RR 状态更平滑）
 type URLSmoothWeightedRR struct {
 	shards [urlRRShardCount]urlRRShard
+
+	// weightFloorMs 低延迟权重 floor（毫秒）。
+	// 当某 URL 的 effectiveLatency 低于此值时，权重计算把延迟当作 floor。
+	// 防御场景：掺假 URL 用极低 TTFB 冒充快速模型，绕过 low-latency guard 后仍可能在 SmoothWRR
+	// 下拿到超高权重；floor 把"看起来快"的权重收益封顶，让假货拿不到流量倾斜。
+	// 0 表示不启用，由 server 在启动 + 配置变更时同步。
+	weightFloorMs atomic.Int64
 }
 
 const urlRRShardCount = 16
@@ -51,6 +59,20 @@ func NewURLSmoothWeightedRR() *URLSmoothWeightedRR {
 // shardFor 按 channelID 哈希定位分片
 func (rr *URLSmoothWeightedRR) shardFor(channelID int64) *urlRRShard {
 	return &rr.shards[uint64(channelID)%urlRRShardCount]
+}
+
+// SetWeightFloorMs 设置低延迟权重 floor（毫秒）。0 表示禁用。
+// server 在启动和配置变更时调用，确保 floor 与 low_latency_affinity_min_ms 同步。
+func (rr *URLSmoothWeightedRR) SetWeightFloorMs(ms int64) {
+	if ms < 0 {
+		ms = 0
+	}
+	rr.weightFloorMs.Store(ms)
+}
+
+// WeightFloorMs 返回当前权重 floor（毫秒）
+func (rr *URLSmoothWeightedRR) WeightFloorMs() int64 {
+	return rr.weightFloorMs.Load()
 }
 
 // Select 从候选 URL 里选一个，按 Nginx SmoothWRR 算法

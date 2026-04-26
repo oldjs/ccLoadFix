@@ -67,6 +67,9 @@ func (s *Server) HandleURLDistribution(c *gin.Context) {
 		return
 	}
 
+	// 与 SmoothWRR 内部使用的权重 floor 保持一致，确保面板展示的权重和实际选路一致
+	floor := float64(s.urlSelector.urlBalancer.WeightFloorMs())
+
 	// 渠道 ID → 名称 map，方便前端展示
 	nameMap := make(map[int64]string, len(cfgs))
 	channelURLs := make(map[int64][]string, len(cfgs))
@@ -120,7 +123,7 @@ func (s *Server) HandleURLDistribution(c *gin.Context) {
 				SuccessRate:        rate,
 				TTFBLatencyMs:      st.TTFBLatencyMs,
 				EffectiveLatencyMs: st.EffectiveLatencyMs,
-				ConfiguredWeight:   computeRRWeight(st.EffectiveLatencyMs, rate),
+				ConfiguredWeight:   computeRRWeight(st.EffectiveLatencyMs, rate, floor),
 				CurrentWeight:      sel.CurrentWeight,
 				LastSelectedAtMs:   sel.LastSelectedAtMs,
 				IdleMs:             sel.IdleMs,

@@ -224,6 +224,84 @@ func TestURLSmoothWeightedRR_ConcurrentSafe(t *testing.T) {
 	}
 }
 
+// TestComputeRRWeight_FloorClampsSuspiciouslyFastURL 低延迟权重 floor 把"看起来快"
+// 的 URL 权重收益封顶，防御掺假 URL 用极低 TTFB 在 SmoothWRR 下拿到超高权重。
+//
+// 场景：假货 URL TTFB=30ms，正常 URL TTFB=200ms，其他 URL TTFB=400ms
+// 不开 floor：30ms URL 权重 33333，比 200ms 的 5000 高 6.7 倍 → 流量倾斜
+// 开 floor=100ms：30ms URL 被夹到 100ms，权重 10000，与 100ms 的真实快 URL 同档 → 不再独占
+func TestComputeRRWeight_FloorClampsSuspiciouslyFastURL(t *testing.T) {
+	const floor = 100.0
+
+	// 没开 floor：30ms 拿到的权重比 100ms 高 3.3 倍
+	wFastNoFloor := computeRRWeight(30, 1.0, 0)
+	wNormNoFloor := computeRRWeight(100, 1.0, 0)
+	if wFastNoFloor <= wNormNoFloor*3 {
+		t.Fatalf("baseline check failed: 30ms should get >3x weight of 100ms without floor, got fast=%d norm=%d", wFastNoFloor, wNormNoFloor)
+	}
+
+	// 开 floor=100ms：30ms 被夹到 100ms，权重等于 100ms 的真实 URL
+	wFastFloored := computeRRWeight(30, 1.0, floor)
+	wNormFloored := computeRRWeight(100, 1.0, floor)
+	if wFastFloored != wNormFloored {
+		t.Errorf("with floor=%v, suspiciously-fast 30ms URL should get same weight as 100ms URL, got fast=%d norm=%d", floor, wFastFloored, wNormFloored)
+	}
+
+	// floor 不影响 >= floor 的 URL
+	wAboveFloor := computeRRWeight(200, 1.0, floor)
+	wAboveNoFloor := computeRRWeight(200, 1.0, 0)
+	if wAboveFloor != wAboveNoFloor {
+		t.Errorf("floor should not affect URLs above floor, got with-floor=%d no-floor=%d", wAboveFloor, wAboveNoFloor)
+	}
+}
+
+// TestURLSmoothWeightedRR_WeightFloorBlocksFakeURLDomination 端到端：
+// 通过 SmoothWRR 选 URL 时启用 floor，验证假货 URL 不再独占流量
+func TestURLSmoothWeightedRR_WeightFloorBlocksFakeURLDomination(t *testing.T) {
+	rr := NewURLSmoothWeightedRR()
+	rr.SetWeightFloorMs(100)
+
+	// 模拟两个 URL：fake=30ms（假货），real=200ms（正常）
+	// 在 floor=100 下，fake 被夹到 100ms 等价权重，real 是 200ms
+	urls := []string{"fake", "real"}
+	weights := []int64{
+		computeRRWeight(30, 1.0, float64(rr.WeightFloorMs())),  // fake
+		computeRRWeight(200, 1.0, float64(rr.WeightFloorMs())), // real
+	}
+
+	const rounds = 600
+	counts := map[string]int{}
+	for range rounds {
+		counts[rr.Select(1, urls, weights)]++
+	}
+
+	// 没 floor 时 fake 应占 6.7/(6.7+1) ≈ 87%，开 floor 后应降到 2:1 = 67%
+	fakeShare := float64(counts["fake"]) / float64(rounds)
+	if fakeShare > 0.70 {
+		t.Errorf("with weight floor, fake URL should not dominate; got %.1f%% (counts=%v)", fakeShare*100, counts)
+	}
+	if counts["real"] == 0 {
+		t.Errorf("real URL should still be selected periodically, got %v", counts)
+	}
+}
+
+// TestURLSmoothWeightedRR_SetWeightFloorMs 验证 Set/Get 线程安全
+func TestURLSmoothWeightedRR_SetWeightFloorMs(t *testing.T) {
+	rr := NewURLSmoothWeightedRR()
+	if got := rr.WeightFloorMs(); got != 0 {
+		t.Errorf("default floor should be 0, got %d", got)
+	}
+	rr.SetWeightFloorMs(150)
+	if got := rr.WeightFloorMs(); got != 150 {
+		t.Errorf("expected 150, got %d", got)
+	}
+	// 负值钳到 0
+	rr.SetWeightFloorMs(-1)
+	if got := rr.WeightFloorMs(); got != 0 {
+		t.Errorf("negative floor should clamp to 0, got %d", got)
+	}
+}
+
 // TestURLSmoothWeightedRR_LastSelectedTracking 记录每个 URL 的最后选中时间，闲置识别用
 func TestURLSmoothWeightedRR_LastSelectedTracking(t *testing.T) {
 	rr := NewURLSmoothWeightedRR()

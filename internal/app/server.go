@@ -239,6 +239,10 @@ func NewServer(store storage.Store) *Server {
 
 	// 初始化URL选择器（多URL场景：EWMA延迟追踪+URL级冷却）
 	s.urlSelector = NewURLSelector()
+	// 同步低延迟权重 floor，与 low_latency_affinity_min_ms 保持一致：
+	// 防止假货 URL 用极低 TTFB 在 SmoothWRR 里拿到超高权重（low-latency guard 的双保险）。
+	// 配置变更会触发重启，无需热更新。
+	s.urlSelector.urlBalancer.SetWeightFloorMs(int64(configService.GetInt("low_latency_affinity_min_ms", defaultLowLatencyAffinityMinMs)))
 
 	// 初始化渠道级软亲和（per-model记住上次成功的渠道，下次优先选它）
 	s.channelAffinity = NewChannelAffinity()
