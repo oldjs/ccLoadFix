@@ -401,10 +401,12 @@ func (s *Server) handleProxySuccess(
 
 	// Claude thinking 检测：Claude 渠道 + 请求带了 thinking 参数 + 响应没 thinking 块 → 黑名单
 	// 通过检查请求体判断用户是否要求了 thinking，避免误杀普通请求
+	// opus-4-7 系列豁免：上游 thinking 行为特殊，容易误判，直接跳过
 	if s.urlSelector != nil && reqCtx.isStreaming && reqCtx.baseURL != "" &&
 		util.NormalizeChannelType(cfg.ChannelType) == util.ChannelTypeAnthropic &&
 		requestHasThinkingParam(reqCtx.body) &&
-		!res.HasThinkingBlock {
+		!res.HasThinkingBlock &&
+		!isThinkingBlacklistExempt(actualModel) {
 		s.urlSelector.MarkNoThinking(cfg.ID, reqCtx.baseURL, actualModel)
 		log.Printf("[THINKING] URL=%s 对模型 %s 不提供thinking，已加入黑名单", reqCtx.baseURL, actualModel)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -518,8 +519,19 @@ func (s *URLSelector) GetModelAffinity(channelID int64, model string) (string, b
 	return aff.url, true
 }
 
+// isThinkingBlacklistExempt 判断这个model要不要绕过thinking黑名单
+// opus-4-7 系列上游 thinking 输出有特殊行为，容易被误判，直接豁免
+func isThinkingBlacklistExempt(model string) bool {
+	return strings.Contains(strings.ToLower(model), "opus-4-7")
+}
+
 // MarkNoThinking 标记某URL对某模型不提供thinking，加入黑名单（一周过期）
 func (s *URLSelector) MarkNoThinking(channelID int64, rawURL, model string) {
+	// 豁免名单内的 model 直接跳过，防止任何调用方误把它拉黑
+	if isThinkingBlacklistExempt(model) {
+		return
+	}
+
 	key := urlModelKey{channelID: channelID, url: rawURL, model: model}
 
 	sh := s.getShard(channelID)

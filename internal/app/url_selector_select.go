@@ -185,7 +185,8 @@ func buildCandidate(sh *urlShard, channelID int64, model, rawURL string, idx int
 		c.slowIsolated = true
 		c.cooled = true
 	}
-	if model != "" {
+	// opus-4-7 系列豁免黑名单，不让历史误判条目影响选路
+	if model != "" && !isThinkingBlacklistExempt(model) {
 		umk := urlModelKey{channelID: channelID, url: rawURL, model: model}
 		if expiry, ok := sh.noThinkingBlklist[umk]; ok && now.Before(expiry) {
 			c.noThinkingBlocked = true
