@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 )
 
@@ -158,11 +159,9 @@ func TestProxy_GPTImage408StreamIncomplete_ChannelSwitch(t *testing.T) {
 	}
 
 	// 再断：ch1 应当被冷却（渠道级），不残留
+	// 注意：冷却写入走 cooldownWriteCh 异步 channel，由后台 worker 持久化到 DB。
+	// CI 上 CPU 紧/调度慢时 worker 可能还没处理完就到这里，所以 poll 一段时间。
 	ctx := context.Background()
-	cooldowns, err := env.store.GetAllChannelCooldowns(ctx)
-	if err != nil {
-		t.Fatalf("GetAllChannelCooldowns: %v", err)
-	}
 	configs, _ := env.store.ListConfigs(ctx)
 	var ch1ID int64
 	for _, c := range configs {
@@ -174,8 +173,26 @@ func TestProxy_GPTImage408StreamIncomplete_ChannelSwitch(t *testing.T) {
 	if ch1ID == 0 {
 		t.Fatal("could not resolve ch1 id")
 	}
-	if _, cooled := cooldowns[ch1ID]; !cooled {
-		t.Fatal("ch1 should be cooled after 408 stream-incomplete upgrade")
+	waitForChannelCooldown(t, env.store, ch1ID, 2*time.Second)
+}
+
+// waitForChannelCooldown 等冷却异步写入 DB 落地，CI 上 worker 调度慢时必须 poll
+// 超时仍未出现就 t.Fatal，超时取 2s 在 worker 正常调度下足够（处理 1 个任务 < 几 ms）
+func waitForChannelCooldown(t testing.TB, store storage.Store, channelID int64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		cooldowns, err := store.GetAllChannelCooldowns(context.Background())
+		if err != nil {
+			t.Fatalf("GetAllChannelCooldowns: %v", err)
+		}
+		if _, ok := cooldowns[channelID]; ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("channel %d should be cooled within %v, got %d cooldowns total", channelID, timeout, len(cooldowns))
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
