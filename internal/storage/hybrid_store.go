@@ -669,6 +669,26 @@ func (h *HybridStore) ImportChannelBatch(ctx context.Context, channels []*model.
 	return created, updated, nil
 }
 
+// === Routing Runtime State ===
+// 路由热数据是节点本地状态（每个实例的 EWMA / 亲和都不一样），只存 SQLite 不写 MySQL，
+// 否则多实例共享会互相覆盖、抹掉本地的延迟感知。
+
+func (h *HybridStore) URLRuntimeStateReplaceAll(ctx context.Context, entries []model.URLRuntimeState) error {
+	return h.sqlite.URLRuntimeStateReplaceAll(ctx, entries)
+}
+
+func (h *HybridStore) URLRuntimeStateLoadAll(ctx context.Context) ([]model.URLRuntimeState, error) {
+	return h.sqlite.URLRuntimeStateLoadAll(ctx)
+}
+
+func (h *HybridStore) ChannelAffinityReplaceAll(ctx context.Context, entries []model.ChannelAffinityState) error {
+	return h.sqlite.ChannelAffinityReplaceAll(ctx, entries)
+}
+
+func (h *HybridStore) ChannelAffinityLoadAll(ctx context.Context) ([]model.ChannelAffinityState, error) {
+	return h.sqlite.ChannelAffinityLoadAll(ctx)
+}
+
 // === Lifecycle ===
 
 func (h *HybridStore) Ping(ctx context.Context) error {

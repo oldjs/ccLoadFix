@@ -54,6 +54,8 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		schema.DefineSystemSettingsTable,
 		schema.DefineAdminSessionsTable,
 		schema.DefineLogsTable,
+		schema.DefineURLRuntimeStateTable,      // 路由运行时状态（EWMA/亲和/冷却等）
+		schema.DefineChannelAffinityStateTable, // 渠道级软亲和（model→channel）
 	}
 
 	// 创建表和索引

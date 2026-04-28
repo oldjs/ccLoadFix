@@ -344,8 +344,63 @@ func NewServer(store storage.Store) *Server {
 	s.wg.Add(1)
 	go s.stateCleanupLoop()
 
+	// 路由热数据持久化：启动时恢复 + 每 30 秒全量刷盘 + 关停同步刷盘
+	// 重启场景下避免 EWMA 延迟、亲和、URL 冷却、thinking 黑名单等热数据被清零
+	s.startRoutingPersistence()
+
 	return s
 
+}
+
+// startRoutingPersistence 启动路由热数据的持久化
+// 1. 同步从 store 加载 URLSelector 和 ChannelAffinity 的状态到内存
+// 2. 启动周期 flush goroutine（30 秒一次全量同步）
+// 3. baseCtx 取消时 goroutine 自己做最后一次刷盘后退出
+func (s *Server) startRoutingPersistence() {
+	loadCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if s.urlSelector != nil {
+		if loaded, err := s.urlSelector.LoadFromStore(loadCtx, s.store); err != nil {
+			log.Printf("[WARN] URLSelector 加载持久化状态失败: %v（首次部署或表为空可忽略）", err)
+		} else if loaded > 0 {
+			log.Printf("[INFO] URLSelector 已恢复 %d 条路由热数据（EWMA/亲和/冷却等）", loaded)
+		}
+		s.urlSelector.StartPersistence(URLSelectorPersistenceConfig{
+			Store:       s.store,
+			Interval:    30 * time.Second,
+			ShutdownCtx: s.baseCtx,
+			WaitGroup:   &s.wg,
+		})
+	}
+
+	if s.channelAffinity != nil {
+		ttl := s.channelAffinityTTL()
+		if loaded, err := s.channelAffinity.LoadFromStore(loadCtx, s.store, ttl); err != nil {
+			log.Printf("[WARN] ChannelAffinity 加载持久化状态失败: %v", err)
+		} else if loaded > 0 {
+			log.Printf("[INFO] ChannelAffinity 已恢复 %d 条 model→channel 亲和", loaded)
+		}
+		s.channelAffinity.StartPersistence(ChannelAffinityPersistenceConfig{
+			Store:       s.store,
+			Interval:    30 * time.Second,
+			ShutdownCtx: s.baseCtx,
+			WaitGroup:   &s.wg,
+			TTLProvider: s.channelAffinityTTL,
+		})
+	}
+}
+
+// channelAffinityTTL 读取当前配置的渠道亲和 TTL，配置缺失或非法时回退默认值
+func (s *Server) channelAffinityTTL() time.Duration {
+	ttlSec := 1800
+	if s.configService != nil {
+		ttlSec = s.configService.GetInt("channel_affinity_ttl_seconds", 1800)
+	}
+	if ttlSec <= 0 {
+		ttlSec = 1800
+	}
+	return time.Duration(ttlSec) * time.Second
 }
 
 // ================== 缓存辅助函数 ==================
@@ -684,11 +739,7 @@ func (s *Server) stateCleanupLoop() {
 
 			// 清理过期的渠道亲和条目
 			if s.channelAffinity != nil {
-				ttlSec := 1800
-				if s.configService != nil {
-					ttlSec = s.configService.GetInt("channel_affinity_ttl_seconds", 1800)
-				}
-				s.channelAffinity.Cleanup(time.Duration(ttlSec) * time.Second)
+				s.channelAffinity.Cleanup(s.channelAffinityTTL())
 			}
 		}
 	}

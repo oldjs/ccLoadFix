@@ -1,11 +1,14 @@
 package app
 
 import (
+	"context"
+	"log"
 	"math/rand/v2"
 	"sync"
 	"time"
 
 	modelpkg "ccLoad/internal/model"
+	"ccLoad/internal/storage"
 )
 
 // ChannelAffinity 渠道级软亲和：per-model 记住上次成功的渠道，下次优先走它
@@ -94,6 +97,120 @@ func (ca *ChannelAffinity) Cleanup(ttl time.Duration) {
 		}
 	}
 	ca.mu.Unlock()
+}
+
+// snapshot 把当前未过期的亲和拍成切片（持久化用）
+// 按 ttl 过滤，避免把已过期数据写到 DB
+func (ca *ChannelAffinity) snapshot(ttl time.Duration) []modelpkg.ChannelAffinityState {
+	now := time.Now()
+	ca.mu.RLock()
+	defer ca.mu.RUnlock()
+
+	out := make([]modelpkg.ChannelAffinityState, 0, len(ca.affinities))
+	for model, entry := range ca.affinities {
+		if ttl > 0 && now.Sub(entry.updatedAt) > ttl {
+			continue
+		}
+		out = append(out, modelpkg.ChannelAffinityState{
+			Model:     model,
+			ChannelID: entry.channelID,
+			UpdatedAt: entry.updatedAt.Unix(),
+		})
+	}
+	return out
+}
+
+// LoadFromStore 启动时一次性恢复
+// ttl 为当前配置值；过期的条目跳过不加载
+func (ca *ChannelAffinity) LoadFromStore(ctx context.Context, store storage.Store, ttl time.Duration) (int, error) {
+	if store == nil {
+		return 0, nil
+	}
+	entries, err := store.ChannelAffinityLoadAll(ctx)
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now()
+
+	ca.mu.Lock()
+	defer ca.mu.Unlock()
+
+	loaded := 0
+	for _, e := range entries {
+		if e.Model == "" || e.ChannelID <= 0 {
+			continue
+		}
+		updated := time.Unix(e.UpdatedAt, 0)
+		if ttl > 0 && now.Sub(updated) > ttl {
+			continue
+		}
+		ca.affinities[e.Model] = &channelAffinityEntry{
+			channelID: e.ChannelID,
+			updatedAt: updated,
+		}
+		loaded++
+	}
+	return loaded, nil
+}
+
+// ChannelAffinityPersistenceConfig 持久化运行参数
+type ChannelAffinityPersistenceConfig struct {
+	Store        storage.Store
+	Interval     time.Duration
+	ShutdownCtx  context.Context
+	WaitGroup    *sync.WaitGroup
+	FlushTimeout time.Duration
+	TTLProvider  func() time.Duration // 动态读取当前 TTL（配置可热改）
+}
+
+// StartPersistence 启动周期 flush goroutine
+func (ca *ChannelAffinity) StartPersistence(cfg ChannelAffinityPersistenceConfig) {
+	if cfg.Store == nil || cfg.Interval <= 0 {
+		return
+	}
+	flushTimeout := cfg.FlushTimeout
+	if flushTimeout <= 0 {
+		flushTimeout = 10 * time.Second
+	}
+	ttlFn := cfg.TTLProvider
+	if ttlFn == nil {
+		ttlFn = func() time.Duration { return 30 * time.Minute }
+	}
+	if cfg.WaitGroup != nil {
+		cfg.WaitGroup.Add(1)
+	}
+	go func() {
+		if cfg.WaitGroup != nil {
+			defer cfg.WaitGroup.Done()
+		}
+		log.Printf("[INFO] ChannelAffinity 持久化已启动（每 %v 全量同步一次）", cfg.Interval)
+		ticker := time.NewTicker(cfg.Interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-cfg.ShutdownCtx.Done():
+				finalCtx, cancel := context.WithTimeout(context.Background(), flushTimeout)
+				if err := ca.flush(finalCtx, cfg.Store, ttlFn()); err != nil {
+					log.Printf("[WARN] ChannelAffinity 关停前刷盘失败: %v", err)
+				} else {
+					log.Print("[INFO] ChannelAffinity 关停前已同步刷盘")
+				}
+				cancel()
+				return
+			case <-ticker.C:
+				flushCtx, cancel := context.WithTimeout(cfg.ShutdownCtx, flushTimeout)
+				if err := ca.flush(flushCtx, cfg.Store, ttlFn()); err != nil {
+					log.Printf("[WARN] ChannelAffinity 周期刷盘失败: %v", err)
+				}
+				cancel()
+			}
+		}
+	}()
+}
+
+func (ca *ChannelAffinity) flush(ctx context.Context, store storage.Store, ttl time.Duration) error {
+	entries := ca.snapshot(ttl)
+	return store.ChannelAffinityReplaceAll(ctx, entries)
 }
 
 // ListAll 返回所有未过期的亲和状态（admin API 用）

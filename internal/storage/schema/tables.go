@@ -138,3 +138,36 @@ func DefineLogsTable() *TableBuilder {
 		Index("idx_logs_time_auth_token", "time, auth_token_id"). // 按时间+令牌查询
 		Index("idx_logs_time_actual_model", "time, actual_model") // 按时间+实际模型查询
 }
+
+// DefineURLRuntimeStateTable 定义 url_runtime_state 表
+// 存 URLSelector 的 EWMA 延迟、亲和、warm、URL 级冷却、慢隔离、thinking 黑名单
+// 单表多 kind 模型，url/model 不适用时填空字符串
+//
+// 写入策略：全量替换（DELETE + 批量 INSERT 在同一事务），业务唯一性由内存 map 天然保证，
+// 因此不设置主键/唯一索引（避开 InnoDB utf8mb4 主键长度上限问题）
+func DefineURLRuntimeStateTable() *TableBuilder {
+	return NewTable("url_runtime_state").
+		Column("channel_id INT NOT NULL").
+		Column("url VARCHAR(500) NOT NULL DEFAULT ''").        // 上游URL；affinity/warm 维度时为空
+		Column("model VARCHAR(191) NOT NULL DEFAULT ''").      // model 名；URL 维度（latency/cooldown/...）时为空
+		Column("kind VARCHAR(32) NOT NULL").                   // URLRuntimeKind* 之一
+		Column("ewma_ms DOUBLE NOT NULL DEFAULT 0").           // 仅 latency / probe_latency
+		Column("expires_at BIGINT NOT NULL DEFAULT 0").        // 仅 cooldown / slow_iso / no_thinking
+		Column("consecutive_fails BIGINT NOT NULL DEFAULT 0"). // 仅 cooldown
+		Column("payload TEXT NOT NULL").                       // affinity/warm 用 JSON
+		Column("updated_at BIGINT NOT NULL").
+		Index("idx_url_runtime_channel", "channel_id"). // 按渠道扫描（admin 调试用）
+		Index("idx_url_runtime_kind", "kind")           // 按 kind 加速过滤
+}
+
+// DefineChannelAffinityStateTable 定义 channel_affinity_state 表
+// 存 ChannelAffinity（model→channel）的持久化数据，TTL 由运行时配置决定，加载时按当前 TTL 过滤
+//
+// model 是天然主键。MySQL VARCHAR(191) utf8mb4 在主键长度限制内（<= 767 字节）
+func DefineChannelAffinityStateTable() *TableBuilder {
+	return NewTable("channel_affinity_state").
+		Column("model VARCHAR(191) NOT NULL PRIMARY KEY").
+		Column("channel_id INT NOT NULL").
+		Column("updated_at BIGINT NOT NULL").
+		Index("idx_channel_affinity_updated", "updated_at") // 按更新时间清理过老的
+}

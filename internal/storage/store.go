@@ -98,6 +98,14 @@ type Store interface {
 	// === Batch Operations ===
 	ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error)
 
+	// === Routing Runtime State (持久化路由热数据) ===
+	// 全量替换语义：URLRuntimeStateReplaceAll 会清空整张 url_runtime_state 表，再写入 entries
+	// 业务唯一性由调用方（内存 map）保证，DB 不强制
+	URLRuntimeStateReplaceAll(ctx context.Context, entries []model.URLRuntimeState) error
+	URLRuntimeStateLoadAll(ctx context.Context) ([]model.URLRuntimeState, error)
+	ChannelAffinityReplaceAll(ctx context.Context, entries []model.ChannelAffinityState) error
+	ChannelAffinityLoadAll(ctx context.Context) ([]model.ChannelAffinityState, error)
+
 	// === Infrastructure ===
 	Ping(ctx context.Context) error
 	Close() error
