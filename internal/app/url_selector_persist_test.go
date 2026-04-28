@@ -9,7 +9,7 @@ import (
 )
 
 // TestURLSelectorPersist_RoundTrip 验证主流程：写入内存 → snapshot → ReplaceAll → LoadFromStore
-// 7 种 kind 都覆盖：latency / probe_latency / cooldown / slow_iso / no_thinking / affinity / warm
+// 8 种 kind 都覆盖：latency / probe_latency / cooldown / slow_iso / no_thinking / affinity / warm / requests
 func TestURLSelectorPersist_RoundTrip(t *testing.T) {
 	store, cleanup := testutil.SetupTestStore(t)
 	defer cleanup()
@@ -92,6 +92,57 @@ func TestURLSelectorPersist_RoundTrip(t *testing.T) {
 		t.Fatal("warm entry missing or empty after reload")
 	} else if entry.slots[0].url != url1 {
 		t.Fatalf("warm slot[0] url mismatch: got %q want %q", entry.slots[0].url, url1)
+	}
+
+	// requests：RecordLatency 给 url1 计了 success=1，CooldownURL 给 url2 计了 failure=1
+	// 重启后 successRate 权重才不会归零
+	if rc := shDst.requests[urlKey{channelID: cid, url: url1}]; rc == nil {
+		t.Fatal("requests for url1 missing after reload")
+	} else if rc.success != 1 || rc.failure != 0 {
+		t.Fatalf("url1 requests: got success=%d failure=%d, want 1/0", rc.success, rc.failure)
+	}
+	if rc := shDst.requests[urlKey{channelID: cid, url: url2}]; rc == nil {
+		t.Fatal("requests for url2 missing after reload")
+	} else if rc.failure != 1 {
+		t.Fatalf("url2 requests failure: got %d, want >=1", rc.failure)
+	}
+}
+
+// TestURLSelectorPersist_RequestsSkippedWithoutLatency 没 latency/probeLatency 数据的 URL，
+// 它累计的 requests 不应被持久化（避免给已被 GC 的死 URL 留累计计数）
+func TestURLSelectorPersist_RequestsSkippedWithoutLatency(t *testing.T) {
+	store, cleanup := testutil.SetupTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	src := NewURLSelector()
+	const cid int64 = 11
+	const url = "https://orphan.example.com"
+
+	// 手动只写 requests，不写 latencies/probeLatencies —— 模拟 latency 已被 GC 但 requests 残留
+	sh := src.getShard(cid)
+	sh.mu.Lock()
+	sh.requests[urlKey{channelID: cid, url: url}] = &urlRequestCount{
+		success: 100,
+		failure: 5,
+	}
+	sh.mu.Unlock()
+
+	if err := src.flush(ctx, store); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	dst := NewURLSelector()
+	if _, err := dst.LoadFromStore(ctx, store); err != nil {
+		t.Fatalf("LoadFromStore: %v", err)
+	}
+
+	shDst := dst.getShard(cid)
+	shDst.mu.RLock()
+	defer shDst.mu.RUnlock()
+
+	if rc := shDst.requests[urlKey{channelID: cid, url: url}]; rc != nil {
+		t.Errorf("orphan requests should not be reloaded, got success=%d failure=%d", rc.success, rc.failure)
 	}
 }
 

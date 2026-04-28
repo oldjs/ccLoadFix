@@ -9,6 +9,7 @@ const (
 	URLRuntimeKindNoThinking   = "no_thinking"   // (URL,model) 维度的 thinking 黑名单
 	URLRuntimeKindAffinity     = "affinity"      // (channel,model) → URL 亲和
 	URLRuntimeKindWarm         = "warm"          // (channel,model) 的 warm 备选 slots
+	URLRuntimeKindRequests     = "requests"      // URL 累计 success/failure 计数（用于 successRate 加权）
 )
 
 // URLRuntimeState 是 URL 选择器持久化用的统一行结构
@@ -17,6 +18,7 @@ const (
 //   - cooldown:                用 ExpiresAt + ConsecutiveFails
 //   - slow_iso / no_thinking:  用 ExpiresAt
 //   - affinity / warm:         用 Payload (JSON)
+//   - requests:                用 Payload (JSON: success/failure)
 //
 // 主键: (ChannelID, URL, Model, Kind)；URL 或 Model 不适用时填空字符串。
 type URLRuntimeState struct {

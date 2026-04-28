@@ -118,6 +118,14 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 		}
 
+		// 增量迁移：url_runtime_state.url 从 VARCHAR(500) 扩展为 TEXT
+		// 防止超长 URL（带查询参数/深路径）被截断导致 INSERT 失败
+		if tb.Name() == "url_runtime_state" {
+			if err := migrateURLRuntimeStateURLToText(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate url_runtime_state url to text: %w", err)
+			}
+		}
+
 		// 创建索引
 		for _, idx := range buildIndexes(tb, dialect) {
 			if err := createIndex(ctx, db, idx, dialect); err != nil {
@@ -1140,6 +1148,34 @@ func migrateChannelsURLToText(ctx context.Context, db *sql.DB, dialect Dialect) 
 		return fmt.Errorf("modify url column to TEXT: %w", err)
 	}
 	log.Printf("[MIGRATE] Modified channels.url: VARCHAR → TEXT")
+	return nil
+}
+
+// migrateURLRuntimeStateURLToText 把 url_runtime_state.url 从 VARCHAR(500) 改成 TEXT
+// 02bd366 引入此表时用了 VARCHAR(500)，但有些上游 URL 带长查询参数会超 500 字符
+// 导致 batch INSERT 报 Data too long 整次刷盘失败。SQLite 端 VARCHAR 自动转 TEXT 不受影响
+func migrateURLRuntimeStateURLToText(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if dialect != DialectMySQL {
+		return nil
+	}
+
+	var dataType string
+	err := db.QueryRowContext(ctx,
+		"SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='url_runtime_state' AND COLUMN_NAME='url'",
+	).Scan(&dataType)
+	if err != nil {
+		return fmt.Errorf("check url_runtime_state.url column type: %w", err)
+	}
+
+	if strings.EqualFold(dataType, "text") {
+		return nil
+	}
+
+	if _, err := db.ExecContext(ctx,
+		"ALTER TABLE url_runtime_state MODIFY COLUMN url TEXT NOT NULL"); err != nil {
+		return fmt.Errorf("modify url_runtime_state.url column to TEXT: %w", err)
+	}
+	log.Printf("[MIGRATE] Modified url_runtime_state.url: VARCHAR → TEXT")
 	return nil
 }
 

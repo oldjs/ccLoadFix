@@ -33,6 +33,13 @@ type warmSlotPayload struct {
 	LastSuccess int64  `json:"last_success"` // unix 秒
 }
 
+// requestsPayload requests kind 的 JSON 载荷（URL 累计调用计数）
+// consecutiveModelNotFound 是临时阈值计数器，故意不持久化
+type requestsPayload struct {
+	Success int64 `json:"success"`
+	Failure int64 `json:"failure"`
+}
+
 // snapshotEntries 扫所有 shard，把当前未过期状态扁平化为 entries 切片
 // 调用过程中按 shard 加 RLock，跨 shard 之间不互斥
 func (s *URLSelector) snapshotEntries(now time.Time) []model.URLRuntimeState {
@@ -190,6 +197,35 @@ func appendShardEntries(out []model.URLRuntimeState, sh *urlShard, now time.Time
 		})
 	}
 
+	// 调用计数：跟 latency 共生命周期。仅当对应 URL 还有 latency/probeLatency 数据时
+	// 才持久化，避免给已被 GC 的死 URL 留累计计数。
+	// 跨重启保留 success/failure 是为了让 successRate 权重不归零，否则历史 50% 成功率的
+	// 半残 URL 重启后会被当作 100% 成功来打权重。
+	for k, rc := range sh.requests {
+		if rc == nil || (rc.success == 0 && rc.failure == 0) {
+			continue
+		}
+		_, hasL := sh.latencies[k]
+		_, hasP := sh.probeLatencies[k]
+		if !hasL && !hasP {
+			continue
+		}
+		payload, err := json.Marshal(requestsPayload{
+			Success: rc.success,
+			Failure: rc.failure,
+		})
+		if err != nil {
+			continue
+		}
+		out = append(out, model.URLRuntimeState{
+			ChannelID: k.channelID,
+			URL:       k.url,
+			Kind:      model.URLRuntimeKindRequests,
+			Payload:   string(payload),
+			UpdatedAt: nowUnix,
+		})
+	}
+
 	return out
 }
 
@@ -341,6 +377,24 @@ func (s *URLSelector) applyLoadedEntry(sh *urlShard, e model.URLRuntimeState, no
 			return false
 		}
 		sh.warms[modelAffinityKey{channelID: e.ChannelID, model: e.Model}] = we
+		return true
+
+	case model.URLRuntimeKindRequests:
+		if e.URL == "" || e.Payload == "" {
+			return false
+		}
+		var p requestsPayload
+		if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+			return false
+		}
+		if p.Success == 0 && p.Failure == 0 {
+			return false
+		}
+		// consecutiveModelNotFound 不恢复，重置为 0 让阈值从头数
+		sh.requests[urlKey{channelID: e.ChannelID, url: e.URL}] = &urlRequestCount{
+			success: p.Success,
+			failure: p.Failure,
+		}
 		return true
 	}
 	return false

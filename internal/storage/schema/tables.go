@@ -140,21 +140,23 @@ func DefineLogsTable() *TableBuilder {
 }
 
 // DefineURLRuntimeStateTable 定义 url_runtime_state 表
-// 存 URLSelector 的 EWMA 延迟、亲和、warm、URL 级冷却、慢隔离、thinking 黑名单
+// 存 URLSelector 的 EWMA 延迟、亲和、warm、URL 级冷却、慢隔离、thinking 黑名单、调用计数
 // 单表多 kind 模型，url/model 不适用时填空字符串
 //
 // 写入策略：全量替换（DELETE + 批量 INSERT 在同一事务），业务唯一性由内存 map 天然保证，
 // 因此不设置主键/唯一索引（避开 InnoDB utf8mb4 主键长度上限问题）
+//
+// url 字段用 TEXT 而非 VARCHAR：channels.url 已是 TEXT 支持任意长度，这里跟齐避免长 URL 被截断
 func DefineURLRuntimeStateTable() *TableBuilder {
 	return NewTable("url_runtime_state").
 		Column("channel_id INT NOT NULL").
-		Column("url VARCHAR(500) NOT NULL DEFAULT ''").        // 上游URL；affinity/warm 维度时为空
+		Column("url TEXT NOT NULL").                           // 上游URL；affinity/warm 维度时为空字符串
 		Column("model VARCHAR(191) NOT NULL DEFAULT ''").      // model 名；URL 维度（latency/cooldown/...）时为空
 		Column("kind VARCHAR(32) NOT NULL").                   // URLRuntimeKind* 之一
 		Column("ewma_ms DOUBLE NOT NULL DEFAULT 0").           // 仅 latency / probe_latency
 		Column("expires_at BIGINT NOT NULL DEFAULT 0").        // 仅 cooldown / slow_iso / no_thinking
 		Column("consecutive_fails BIGINT NOT NULL DEFAULT 0"). // 仅 cooldown
-		Column("payload TEXT NOT NULL").                       // affinity/warm 用 JSON
+		Column("payload TEXT NOT NULL").                       // affinity/warm/requests 用 JSON
 		Column("updated_at BIGINT NOT NULL").
 		Index("idx_url_runtime_channel", "channel_id"). // 按渠道扫描（admin 调试用）
 		Index("idx_url_runtime_kind", "kind")           // 按 kind 加速过滤
