@@ -226,7 +226,7 @@ func (s *Server) testChannelAPIWithURL(
 	// 构建请求（传递实际的API Key和重定向后的模型）
 	fullURL, baseHeaders, body, err := tester.Build(cfgForBuild, apiKey, testReq)
 	if err != nil {
-		return map[string]any{"success": false, "error": "构造测试请求失败: " + err.Error()}
+		return map[string]any{"success": false, "error": "构造测试请求失败: " + err.Error(), "base_url": selectedURL}
 	}
 
 	// 创建HTTP请求
@@ -235,7 +235,7 @@ func (s *Server) testChannelAPIWithURL(
 
 	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(body))
 	if err != nil {
-		return map[string]any{"success": false, "error": "创建HTTP请求失败: " + err.Error()}
+		return map[string]any{"success": false, "error": "创建HTTP请求失败: " + err.Error(), "base_url": selectedURL}
 	}
 
 	// 设置基础请求头
@@ -257,6 +257,7 @@ func (s *Server) testChannelAPIWithURL(
 			"success":     false,
 			"error":       "网络请求失败: " + err.Error(),
 			"duration_ms": time.Since(start).Milliseconds(),
+			"base_url":    selectedURL,
 		}
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -269,6 +270,7 @@ func (s *Server) testChannelAPIWithURL(
 	result := map[string]any{
 		"success":     resp.StatusCode >= 200 && resp.StatusCode < 300,
 		"status_code": resp.StatusCode,
+		"base_url":    selectedURL, // 命中的实际上游URL，前端展示用
 	}
 
 	parseNonStreamResponse := func(bodyBytes []byte) map[string]any {
@@ -529,6 +531,7 @@ func (s *Server) testChannelAPIWithURL(
 			"error":       "读取响应失败: " + err.Error(),
 			"duration_ms": time.Since(start).Milliseconds(),
 			"status_code": resp.StatusCode,
+			"base_url":    selectedURL,
 		}
 	}
 	return parseNonStreamResponse(respBody)

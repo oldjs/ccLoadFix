@@ -738,6 +738,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'modelTest.sortDesc': '降序',
   'modelTest.cacheRead': '缓读',
   'modelTest.cacheCreate': '缓建',
+  'modelTest.hitURL': '命中URL',
   'modelTest.responseContent': '响应内容',
   'modelTest.selectChannelFirst': '请先选择渠道',
   'modelTest.selectTypeFirst': '请先选择渠道类型',

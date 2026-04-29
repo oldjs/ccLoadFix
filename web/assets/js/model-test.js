@@ -31,8 +31,8 @@ const deletePreviewCloseBtn = document.getElementById('deletePreviewCloseBtn');
 const deletePreviewCancelBtn = document.getElementById('deletePreviewCancelBtn');
 const deletePreviewConfirmBtn = document.getElementById('deletePreviewConfirmBtn');
 
-const RESULT_TABLE_COLSPAN_WITH_FIRST_BYTE = 10;
-const RESULT_TABLE_COLSPAN_NO_FIRST_BYTE = 9;
+const RESULT_TABLE_COLSPAN_WITH_FIRST_BYTE = 11;
+const RESULT_TABLE_COLSPAN_NO_FIRST_BYTE = 10;
 const SORT_DIRECTION_ASC = 1;
 const SORT_DIRECTION_DESC = -1;
 const SORT_DIRECTION_NONE = 0;
@@ -49,6 +49,7 @@ const CHANNEL_MODE_HEAD = `
   <th class="table-col-metric" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
   <th class="table-col-metric" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
   <th class="table-col-cost" data-i18n="common.cost" data-sort-key="cost">费用</th>
+  <th class="table-col-url" data-i18n="modelTest.hitURL" data-sort-key="hitURL">命中URL</th>
   <th data-i18n="modelTest.responseContent" data-sort-key="response">响应内容</th>
 `;
 
@@ -62,6 +63,7 @@ const MODEL_MODE_HEAD = `
   <th class="table-col-metric" data-i18n="modelTest.cacheRead" data-sort-key="cacheRead">缓读</th>
   <th class="table-col-metric" data-i18n="modelTest.cacheCreate" data-sort-key="cacheCreate">缓建</th>
   <th class="table-col-cost" data-i18n="common.cost" data-sort-key="cost">费用</th>
+  <th class="table-col-url" data-i18n="modelTest.hitURL" data-sort-key="hitURL">命中URL</th>
   <th data-i18n="modelTest.responseContent" data-sort-key="response">响应内容</th>
 `;
 
@@ -77,6 +79,17 @@ function formatDurationMs(durationMs) {
   return (typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs > 0)
     ? `${(durationMs / 1000).toFixed(2)}s`
     : '-';
+}
+
+// 拿host用于列展示，完整URL放title。解析失败就退化成原串
+function extractHost(rawURL) {
+  const value = String(rawURL || '').trim();
+  if (!value) return '';
+  try {
+    return new URL(value).host || value;
+  } catch (_) {
+    return value;
+  }
 }
 
 function parseNumericCellValue(text) {
@@ -160,6 +173,7 @@ function getResultRowMobileLabels(nameKey, nameFallback) {
     mobileLabelCacheRead: i18nText('modelTest.cacheRead', '缓读'),
     mobileLabelCacheCreate: i18nText('modelTest.cacheCreate', '缓建'),
     mobileLabelCost: i18nText('common.cost', '费用'),
+    mobileLabelHitURL: i18nText('modelTest.hitURL', '命中URL'),
     mobileLabelResponse: i18nText('modelTest.responseContent', '响应内容')
   };
 }
@@ -281,6 +295,8 @@ function getRowSortValue(row, key) {
       return parseNumericCellValue(row.querySelector('.cache-create')?.textContent);
     case 'cost':
       return parseNumericCellValue(row.querySelector('.cost')?.textContent);
+    case 'hitURL':
+      return row.querySelector('.hit-url')?.textContent?.trim() || '';
     case 'response':
       return row.querySelector('.response')?.textContent?.trim() || '';
     default:
@@ -739,14 +755,34 @@ function resetRowStatus(row) {
   row.querySelector('.cache-read').textContent = '-';
   row.querySelector('.cache-create').textContent = '-';
   row.querySelector('.cost').textContent = '-';
+  const hitURLCell = row.querySelector('.hit-url');
+  if (hitURLCell) {
+    hitURLCell.textContent = '-';
+    hitURLCell.title = '';
+  }
   row.querySelector('.response').textContent = i18nText('modelTest.waiting', '等待中...');
   row.querySelector('.response').title = '';
   row.style.background = '';
 }
 
+// 把命中URL写到列里：host作为可见文本，完整URL放title方便复制
+function setHitURLCell(row, rawURL) {
+  const cell = row.querySelector('.hit-url');
+  if (!cell) return;
+  const value = String(rawURL || '').trim();
+  if (!value) {
+    cell.textContent = '-';
+    cell.title = '';
+    return;
+  }
+  cell.textContent = extractHost(value);
+  cell.title = value;
+}
+
 function applyTestResultToRow(row, data) {
   row.querySelector('.first-byte-duration').textContent = formatDurationMs(data.first_byte_duration_ms);
   row.querySelector('.duration').textContent = formatDurationMs(data.duration_ms);
+  setHitURLCell(row, data.base_url);
 
   if (data.success) {
     row.style.background = 'rgba(16, 185, 129, 0.1)';

@@ -738,6 +738,7 @@ window.I18N_LOCALES['en'] = {
   'modelTest.sortDesc': 'Desc',
   'modelTest.cacheRead': 'Cache Read',
   'modelTest.cacheCreate': 'Cache Create',
+  'modelTest.hitURL': 'Hit URL',
   'modelTest.responseContent': 'Response Content',
   'modelTest.selectChannelFirst': 'Please select a channel first',
   'modelTest.selectTypeFirst': 'Please select a channel type first',
